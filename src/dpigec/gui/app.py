@@ -48,8 +48,8 @@ PAGE_STATUS, PAGE_SETTINGS, PAGE_TEST, PAGE_LOG, PAGE_ABOUT = range(5)
 
 QSS = """
 QMainWindow, QDialog { background: palette(window); }
-QFrame#sidebar { background: palette(alternate-base); border: none; border-right: 1px solid palette(mid); }
-QFrame#footer { background: palette(alternate-base); border: none; border-top: 1px solid palette(mid); }
+QFrame#sidebar { background: palette(alternate-base); border: none; border-right: 1px solid rgba(128, 128, 128, 120); }
+QFrame#footer { background: palette(alternate-base); border: none; border-top: 1px solid rgba(128, 128, 128, 120); }
 QLabel#brand { font-size: 16px; font-weight: 800; }
 QLabel#version { color: palette(placeholder-text); font-size: 11px; }
 QLabel#pageTitle { font-size: 24px; font-weight: 800; }
@@ -58,22 +58,22 @@ QLabel#muted { color: palette(placeholder-text); }
 QLabel#groupTitle { font-size: 11px; font-weight: 700; color: palette(placeholder-text); }
 QLabel#dirty { color: #d29922; font-weight: 600; }
 QLabel#chip { background: #2563eb; color: white; border-radius: 9px; padding: 2px 10px; font-weight: 600; }
-QGroupBox { border: 1px solid palette(mid); border-radius: 12px; margin-top: 14px; padding: 14px 12px 10px 12px;
+QGroupBox { border: 1px solid rgba(128, 128, 128, 120); border-radius: 12px; margin-top: 14px; padding: 14px 12px 10px 12px;
             background: palette(alternate-base); }
 QGroupBox::title { subcontrol-origin: margin; left: 14px; padding: 0 6px; font-weight: 700; }
-QFrame#card, QFrame#panel { border: 1px solid palette(mid); border-radius: 12px; background: palette(alternate-base); }
+QFrame#card, QFrame#panel { border: 1px solid rgba(128, 128, 128, 120); border-radius: 12px; background: palette(alternate-base); }
 QFrame#card:hover { border-color: #2563eb; }
 QLabel#cardValue { font-size: 20px; font-weight: 700; }
 QLabel#cardTitle { color: palette(placeholder-text); font-size: 11px; }
 QFrame#banner { border: 1px solid #2563eb; border-radius: 12px; background: palette(alternate-base); }
-QFrame#section { border: 1px solid palette(mid); border-radius: 12px; background: palette(alternate-base); }
+QFrame#section { border: 1px solid rgba(128, 128, 128, 120); border-radius: 12px; background: palette(alternate-base); }
 QToolButton#sectionHeader { border: none; background: transparent; font-weight: 700; text-align: left;
                             padding: 11px 14px; }
 QToolButton#sectionHeader:hover { color: #2563eb; }
 QWidget#sectionBody { background: transparent; }
 QFrame#toast { background: #1f2937; border-radius: 10px; border-left: 4px solid #2563eb; }
 QFrame#toast QLabel { color: white; font-weight: 600; }
-QPushButton { padding: 7px 16px; border-radius: 8px; border: 1px solid palette(mid); background: palette(button); }
+QPushButton { padding: 7px 16px; border-radius: 8px; border: 1px solid rgba(128, 128, 128, 120); background: palette(button); }
 QPushButton:hover { border-color: #2563eb; }
 QPushButton:pressed { background: palette(midlight); }
 QPushButton:disabled { color: palette(placeholder-text); }
@@ -81,12 +81,12 @@ QPushButton#primary { font-weight: 600; padding: 8px 22px; color: white; backgro
                       border: 1px solid #1d4ed8; }
 QPushButton#primary:hover { background: #3b82f6; }
 QPushButton#primary:pressed { background: #1d4ed8; }
-QPushButton#primary:disabled { background: palette(mid); border-color: palette(mid); color: palette(placeholder-text); }
-QLineEdit, QPlainTextEdit, QSpinBox, QComboBox { border: 1px solid palette(mid); border-radius: 8px; padding: 5px 9px; }
+QPushButton#primary:disabled { background: rgba(128, 128, 128, 120); border-color: rgba(128, 128, 128, 120); color: palette(placeholder-text); }
+QLineEdit, QPlainTextEdit, QSpinBox, QComboBox { border: 1px solid rgba(128, 128, 128, 120); border-radius: 8px; padding: 5px 9px; }
 QLineEdit:focus, QPlainTextEdit:focus, QSpinBox:focus, QComboBox:focus { border: 1px solid #2563eb; }
-QTableWidget { border: 1px solid palette(mid); border-radius: 10px; gridline-color: palette(mid);
+QTableWidget { border: 1px solid rgba(128, 128, 128, 120); border-radius: 10px; gridline-color: rgba(128, 128, 128, 120);
                alternate-background-color: palette(alternate-base); }
-QHeaderView::section { padding: 7px 9px; border: none; border-bottom: 1px solid palette(mid);
+QHeaderView::section { padding: 7px 9px; border: none; border-bottom: 1px solid rgba(128, 128, 128, 120);
                        background: palette(alternate-base); font-weight: 600; }
 QScrollArea { background: transparent; }
 QStatusBar { color: palette(placeholder-text); }
@@ -444,6 +444,7 @@ class MainWindow(QMainWindow):
         f.setContentsMargins(16, 2, 16, 14)
         f.setHorizontalSpacing(14)
         f.setVerticalSpacing(10)
+        f.setLabelAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         f.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         f.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
         return sec, f
@@ -470,7 +471,10 @@ class MainWindow(QMainWindow):
         find = AnimButton(_("Find the best method for me"))
         find.clicked.connect(lambda: self.tabs.setCurrentIndex(PAGE_TEST))
         f.addRow(muted(_("Not sure which preset works on your network? SplitGate can test them for you.")))
-        f.addRow(find)
+        find_row = QHBoxLayout()
+        find_row.addWidget(find)
+        find_row.addStretch(1)
+        f.addRow(find_row)
         f.addRow(_("Split positions"), self.f_positions)
         f.addRow(_("Delay between pieces"), self.f_delay)
         f.addRow(self.f_oob)
@@ -648,35 +652,57 @@ class MainWindow(QMainWindow):
     def _build_about_tab(self) -> QWidget:
         w, lay = self._page("")
         head = QHBoxLayout()
+        head.setSpacing(16)
         logo = QLabel()
-        logo.setPixmap(app_icon().pixmap(72, 72))
+        logo.setPixmap(app_icon().pixmap(84, 84))
         head.addWidget(logo)
+        col = QVBoxLayout()
+        col.setSpacing(4)
+        name = QLabel("SplitGate")
+        name.setObjectName("hero")
         chip = QLabel(f"v{__version__}")
         chip.setObjectName("chip")
         chip.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-        head.addWidget(chip)
+        col.addStretch(1)
+        col.addWidget(name)
+        col.addWidget(chip, 0, Qt.AlignmentFlag.AlignLeft)
+        col.addStretch(1)
+        head.addLayout(col)
         head.addStretch(1)
         lay.addLayout(head)
-        t = QLabel(_(
-            "<h2>SplitGate {version}</h2>"
-            "<p>A DPI bypass tool for Linux with a GUI, written from scratch.</p>"
-            "<ul>"
-            "<li>Splits the TLS ClientHello at the SNI; splits the Host header in plain HTTP.</li>"
-            "<li>Gets around DNS poisoning with DoH (Cloudflare / Google / Quad9).</li>"
-            "<li>Works on all Wi-Fi and wired connections through nftables; "
-            "it can also be used only as a local SOCKS5 proxy.</li>"
-            "<li>Content is never decrypted; your traffic does not pass through any third-party server.</li></ul>"
-            "<p>This tool is only meant to get around access blocks; it is not a VPN and does not "
-            "hide your IP address. You are responsible for how you use it.</p>"
-            "<p>© 2026 Project Gamers — License: GPL-3.0-or-later</p>", version=__version__))
-        t.setObjectName("about_text")
-        t.setTextFormat(Qt.TextFormat.RichText)
-        t.setWordWrap(True)
-        t.setAlignment(Qt.AlignmentFlag.AlignTop)
-        lay.addWidget(t)
+        lay.addWidget(QLabel(_("A DPI bypass tool for Linux with a GUI, written from scratch.")))
+
+        panel = QFrame()
+        panel.setObjectName("panel")
+        pl = QVBoxLayout(panel)
+        pl.setContentsMargins(16, 14, 16, 14)
+        pl.setSpacing(10)
+        for text in (_("Splits the TLS ClientHello at the SNI; splits the Host header in plain HTTP."),
+                     _("Gets around DNS poisoning with DoH (Cloudflare / Google / Quad9)."),
+                     _("Works on all Wi-Fi and wired connections through nftables; "
+                       "it can also be used only as a local SOCKS5 proxy."),
+                     _("Content is never decrypted; your traffic does not pass through any third-party server.")):
+            row = QHBoxLayout()
+            row.setSpacing(10)
+            tick = QLabel("✔")
+            tick.setStyleSheet(f"color: {ACCENT}; font-weight: 700;")
+            tick.setAlignment(Qt.AlignmentFlag.AlignTop)
+            row.addWidget(tick, 0, Qt.AlignmentFlag.AlignTop)
+            lab = QLabel(text)
+            lab.setWordWrap(True)
+            row.addWidget(lab, 1)
+            pl.addLayout(row)
+        lay.addWidget(panel)
+        lay.addWidget(muted(_("This tool is only meant to get around access blocks; it is not a VPN and does not "
+                              "hide your IP address. You are responsible for how you use it.")))
+        lic = muted(_("© 2026 Project Gamers — License: GPL-3.0-or-later"))
+        lic.setObjectName("about_license")
+        lic.setStyleSheet("color: palette(placeholder-text);")
+        lay.addWidget(lic)
 
         box = QGroupBox(_("Interface"))
         bl = QVBoxLayout(box)
+        bl.setSpacing(10)
         self.anim_switch = Switch(_("Enable animations"))
         self.anim_switch.setChecked(bool(load_prefs().get("animations", True)))
         self.anim_switch.clicked.connect(self._set_animations)

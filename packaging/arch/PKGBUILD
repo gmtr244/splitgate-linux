@@ -2,7 +2,7 @@
 # Builds from the local source package:
 #   make dist && cp dist/dpigec-*.tar.gz packaging/arch/ && cd packaging/arch && makepkg -si
 pkgname=dpigec
-pkgver=1.1.5
+pkgver=1.1.6
 pkgrel=1
 pkgdesc='DPI bypass tool with a GUI: DoH + SNI splitting, nftables (Arch/CachyOS)'
 arch=('any')

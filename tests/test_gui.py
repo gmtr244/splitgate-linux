@@ -291,7 +291,7 @@ class GuiSmoke(unittest.TestCase):
         win.render_status(FAKE_STATUS)
         self.assertEqual(win.state_label.text(), "Çalışıyor")
         self.assertEqual(win.cards["uptime"].value.text(), "1s 02dk")
-        about = [l for l in win.tabs.widget(4).findChildren(gui.QLabel) if l.objectName() == "about_text"][0]
+        about = [l for l in win.tabs.widget(4).findChildren(gui.QLabel) if l.objectName() == "about_license"][0]
         self.assertIn("Lisans: GPL-3.0-or-later", about.text())
         win.close()
 

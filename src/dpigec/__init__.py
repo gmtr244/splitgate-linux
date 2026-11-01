@@ -2,5 +2,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """SplitGate (Linux) - sıfırdan yazılmış, arayüzlü DPI atlatma aracı."""
 
-__version__ = "1.1.5"
+__version__ = "1.1.6"
 APP_NAME = "SplitGate"

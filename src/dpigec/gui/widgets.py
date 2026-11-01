@@ -199,7 +199,8 @@ class Switch(QCheckBox):
         top = (self.height() - self.H) / 2
         track = QRectF(0.5, top + 0.5, self.W - 1, self.H - 1)
         p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(mix(pal.color(QPalette.ColorRole.Mid), QColor(ACCENT), self._pos))
+        off = mix(pal.color(QPalette.ColorRole.WindowText), pal.color(QPalette.ColorRole.Window), 0.62)
+        p.setBrush(mix(off, QColor(ACCENT), self._pos))
         p.drawRoundedRect(track, self.H / 2, self.H / 2)
         d = self.H - 6
         x = 3 + (self.W - 6 - d) * self._pos
