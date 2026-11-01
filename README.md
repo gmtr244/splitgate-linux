@@ -58,20 +58,28 @@ Uninstall: `./uninstall.sh` (`--purge` also deletes the settings).
 
 ## Usage
 
-**GUI:** *SplitGate* from the application menu, or `dpigec-gui`.
+**GUI:** *SplitGate* from the application menu, or `dpigec-gui`. The pages are in the left sidebar
+(*Status*, *Settings*, *Test*, *Log*, *About*; `Ctrl+1` … `Ctrl+5`). The first time you open it, a short
+"3 steps" card on the *Status* page walks you through the setup.
 
-1. **Test** tab → *Try strategies*: measures with a real TLS handshake which splitting method works on
+1. **Test** page → *Try strategies*: measures with a real TLS handshake which splitting method works on
    your network; *Apply recommended* saves it. The sites it tries are in the box above the button: put
    sites that are blocked for you there (the defaults are only examples). On the command line:
    `dpigec probe example.org example.net`.
-2. Press **Start** at the top. (The administrator password is asked; polkit remembers it for a few minutes.)
-3. In the *Status* tab you can tick *Start automatically at boot*.
+2. Press the big power button on the *Status* page (**Start**). (The administrator password is asked; polkit remembers it for a few minutes.)
+3. At the bottom of the *Status* page you can switch on *Start automatically at boot*.
 4. With a system tray, closing the window with the X only hides it and the service keeps running; **Quit** in the tray menu stops the service and exits. (Without a tray, closing the window just exits the interface; the service keeps running.)
 5. The interface opens only once: starting it again brings the running window to the front (and shows it if it
    was hidden in the tray) instead of opening a second one. If it was really closed, a new one opens.
 6. The big status at the top says **Working** (green) only when the real check succeeded, i.e. the chosen method
    opens a site that a plain connection cannot. Otherwise it says *Checking…*, *Connected (not checked yet)*,
-   *Connected, sites not blocked* or *Not working on this network* (red) with the reason below it.
+   *Connected, sites not blocked* or *Not working on this network* (red) with the reason below it. When the check
+   fails, a *Find a working method* button takes you to the *Test* page.
+7. *Settings* shows the common options (splitting strategy, DNS) first and keeps the rest under **Advanced**
+   (collapsed). An *Unsaved changes* note appears next to *Save and apply* (`Ctrl+S`) until you save.
+8. *Status* also shows a live download/upload graph. Everything in the interface is animated; switch it off
+   with *About → Enable animations* (or start with `DPIGEC_NO_ANIM=1`). The animations pause while the window
+   is hidden in the tray, so they do not use the CPU.
 
 **Command line:**
 

@@ -31,7 +31,14 @@ install_deps() {
     pacman -S --needed --noconfirm python nftables polkit python-pyqt6 make
   elif command -v apt-get >/dev/null 2>&1; then
     apt-get update
-    DEBIAN_FRONTEND=noninteractive apt-get install -y python3 nftables policykit-1 python3-pyqt6 make
+    # polkit paket adı Debian sürümüne göre değişir: eski sürümlerde policykit-1,
+    # yenilerinde polkitd + pkexec. Hangisi varsa onu kur.
+    if apt-cache show policykit-1 >/dev/null 2>&1; then
+      polkit_pkgs="policykit-1"
+    else
+      polkit_pkgs="polkitd pkexec"
+    fi
+    DEBIAN_FRONTEND=noninteractive apt-get install -y python3 nftables $polkit_pkgs python3-pyqt6 make
   elif command -v dnf >/dev/null 2>&1; then
     dnf install -y python3 nftables polkit python3-pyqt6 make
   elif command -v zypper >/dev/null 2>&1; then
@@ -46,6 +53,7 @@ install_deps() {
 for bin in python3 nft make; do
   command -v "$bin" >/dev/null 2>&1 || { echo "Missing dependency: $bin" >&2; exit 1; }
 done
+command -v pkexec >/dev/null 2>&1 || echo "WARNING: pkexec not found; start/stop from the GUI and CLI needs polkit (policykit-1 or polkitd + pkexec)."
 python3 - <<'PY' || echo "WARNING: PyQt6 not found; the GUI will not work, the command line (dpigec) will."
 import PyQt6.QtWidgets  # noqa
 PY

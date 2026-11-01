@@ -291,7 +291,8 @@ class GuiSmoke(unittest.TestCase):
         win.render_status(FAKE_STATUS)
         self.assertEqual(win.state_label.text(), "Çalışıyor")
         self.assertEqual(win.cards["uptime"].value.text(), "1s 02dk")
-        self.assertIn("Lisans: GPL-3.0-or-later", win.tabs.widget(4).findChild(gui.QLabel).text())
+        about = [l for l in win.tabs.widget(4).findChildren(gui.QLabel) if l.objectName() == "about_text"][0]
+        self.assertIn("Lisans: GPL-3.0-or-later", about.text())
         win.close()
 
     def test_language_switch_is_refused_while_busy(self):
@@ -308,7 +309,7 @@ class GuiSmoke(unittest.TestCase):
     def test_messages_from_helper_are_not_rendered_as_html(self):
         gui, win = self.make_window()
         from PyQt6.QtCore import Qt
-        for label in (win.probe_msg, win.error_label, win.q_res):
+        for label in (win.probe_msg, win.error_label, win.q_res, win.state_detail, win.doh_label):
             self.assertEqual(label.textFormat(), Qt.TextFormat.PlainText)
         win.close()
 

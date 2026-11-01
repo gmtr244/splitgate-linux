@@ -13,22 +13,24 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal
-from PyQt6.QtGui import QAction, QColor, QFont, QIcon, QPainter, QPixmap
+from PyQt6.QtGui import QAction, QColor, QFont, QIcon, QKeySequence, QPainter, QPixmap, QShortcut
 from PyQt6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog, QFormLayout, QFrame,
                              QGridLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMenu,
-                             QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QSpinBox,
-                             QSystemTrayIcon, QTableWidget, QTableWidgetItem, QTabWidget,
+                             QMessageBox, QPlainTextEdit, QScrollArea, QSizePolicy, QSpinBox,
+                             QSystemTrayIcon, QTableWidget, QTableWidgetItem,
                              QVBoxLayout, QWidget, QHeaderView, QAbstractItemView)
 
 from .. import __version__
-from ..i18n import (DEFAULT_LANGUAGE, LANGUAGES, _, init as init_language, language,
-                    normalize_language, save_language, saved_language, set_language)
+from ..i18n import (DEFAULT_LANGUAGE, LANGUAGES, _, init as init_language, language, load_prefs,
+                    normalize_language, save_language, save_prefs, saved_language, set_language)
 from ..config import (LOG_FILE, PRESETS, SYSTEM_CONFIG, ConfigError, default_config, load_config,
                       normalize)
 from ..ctlclient import run_ctl, unit_active, unit_enabled
 from ..probe import diagnose, verdict_text
 from . import single
 from ..status import read_status
+from .widgets import (ACCENT, AnimButton, BusyBar, CollapsibleSection, Pages, PowerButton, Sparkline,
+                      StatCard, Switch, Toast, fade_in, set_motion, tween)
 
 GREEN, GREY, AMBER, RED = "#2ea043", "#6e7681", "#d29922", "#f85149"
 ICON_PATH = Path(__file__).parent / "resources" / "dpigec.svg"
@@ -42,16 +44,52 @@ DNS_ITEMS = [("cloudflare", "Cloudflare (1.1.1.1)"), ("google", "Google (8.8.8.8
 LOG_LEVELS = [("info", "Info"), ("debug", "Verbose (debug)"), ("warning", "Warning"),
               ("error", "Errors only")]
 
+PAGE_STATUS, PAGE_SETTINGS, PAGE_TEST, PAGE_LOG, PAGE_ABOUT = range(5)
+
 QSS = """
-QFrame#card { border: 1px solid palette(mid); border-radius: 10px; }
-QLabel#cardValue { font-size: 20px; font-weight: 600; }
-QLabel#cardTitle { color: palette(placeholder-text); font-size: 11px; }
-QPushButton#power { font-size: 16px; font-weight: 600; padding: 14px 34px; border-radius: 12px;
-                    color: white; }
-QPushButton#primary { font-weight: 600; padding: 7px 18px; }
-QLabel#hero { font-size: 22px; font-weight: 700; }
-QLabel#brand { font-size: 12px; font-weight: 700; color: palette(placeholder-text); }
+QMainWindow, QDialog { background: palette(window); }
+QFrame#sidebar { background: palette(alternate-base); border: none; border-right: 1px solid palette(mid); }
+QFrame#footer { background: palette(alternate-base); border: none; border-top: 1px solid palette(mid); }
+QLabel#brand { font-size: 16px; font-weight: 800; }
+QLabel#version { color: palette(placeholder-text); font-size: 11px; }
+QLabel#pageTitle { font-size: 24px; font-weight: 800; }
+QLabel#hero { font-size: 26px; font-weight: 800; }
 QLabel#muted { color: palette(placeholder-text); }
+QLabel#groupTitle { font-size: 11px; font-weight: 700; color: palette(placeholder-text); }
+QLabel#dirty { color: #d29922; font-weight: 600; }
+QLabel#chip { background: #2563eb; color: white; border-radius: 9px; padding: 2px 10px; font-weight: 600; }
+QGroupBox { border: 1px solid palette(mid); border-radius: 12px; margin-top: 14px; padding: 14px 12px 10px 12px;
+            background: palette(alternate-base); }
+QGroupBox::title { subcontrol-origin: margin; left: 14px; padding: 0 6px; font-weight: 700; }
+QFrame#card, QFrame#panel { border: 1px solid palette(mid); border-radius: 12px; background: palette(alternate-base); }
+QFrame#card:hover { border-color: #2563eb; }
+QLabel#cardValue { font-size: 20px; font-weight: 700; }
+QLabel#cardTitle { color: palette(placeholder-text); font-size: 11px; }
+QFrame#banner { border: 1px solid #2563eb; border-radius: 12px; background: palette(alternate-base); }
+QFrame#section { border: 1px solid palette(mid); border-radius: 12px; background: palette(alternate-base); }
+QToolButton#sectionHeader { border: none; background: transparent; font-weight: 700; text-align: left;
+                            padding: 11px 14px; }
+QToolButton#sectionHeader:hover { color: #2563eb; }
+QWidget#sectionBody { background: transparent; }
+QFrame#toast { background: #1f2937; border-radius: 10px; border-left: 4px solid #2563eb; }
+QFrame#toast QLabel { color: white; font-weight: 600; }
+QPushButton { padding: 7px 16px; border-radius: 8px; border: 1px solid palette(mid); background: palette(button); }
+QPushButton:hover { border-color: #2563eb; }
+QPushButton:pressed { background: palette(midlight); }
+QPushButton:disabled { color: palette(placeholder-text); }
+QPushButton#primary { font-weight: 600; padding: 8px 22px; color: white; background: #2563eb;
+                      border: 1px solid #1d4ed8; }
+QPushButton#primary:hover { background: #3b82f6; }
+QPushButton#primary:pressed { background: #1d4ed8; }
+QPushButton#primary:disabled { background: palette(mid); border-color: palette(mid); color: palette(placeholder-text); }
+QLineEdit, QPlainTextEdit, QSpinBox, QComboBox { border: 1px solid palette(mid); border-radius: 8px; padding: 5px 9px; }
+QLineEdit:focus, QPlainTextEdit:focus, QSpinBox:focus, QComboBox:focus { border: 1px solid #2563eb; }
+QTableWidget { border: 1px solid palette(mid); border-radius: 10px; gridline-color: palette(mid);
+               alternate-background-color: palette(alternate-base); }
+QHeaderView::section { padding: 7px 9px; border: none; border-bottom: 1px solid palette(mid);
+                       background: palette(alternate-base); font-weight: 600; }
+QScrollArea { background: transparent; }
+QStatusBar { color: palette(placeholder-text); }
 """
 
 
@@ -62,7 +100,7 @@ def app_icon() -> QIcon:
         pm.fill(Qt.GlobalColor.transparent)
         p = QPainter(pm)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        p.setBrush(QColor("#2563eb"))
+        p.setBrush(QColor(ACCENT))
         p.setPen(Qt.PenStyle.NoPen)
         p.drawRoundedRect(14, 8, 100, 112, 28, 28)
         p.setPen(QColor("white"))
@@ -116,6 +154,13 @@ def set_combo(c: QComboBox, data) -> None:
         c.setCurrentIndex(i)
 
 
+def muted(text: str) -> QLabel:
+    lab = QLabel(text)
+    lab.setObjectName("muted")
+    lab.setWordWrap(True)
+    return lab
+
+
 # --------------------------------------------------------------------------
 # Arka plan işçileri
 # --------------------------------------------------------------------------
@@ -149,24 +194,6 @@ class QuickTestWorker(QThread):
             self.done.emit({"ok": False, "err": f"{type(e).__name__}: {e}"})
 
 
-class Card(QFrame):
-    def __init__(self, title: str) -> None:
-        super().__init__()
-        self.setObjectName("card")
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(14, 10, 14, 10)
-        lay.setSpacing(2)
-        self.value = QLabel("–")
-        self.value.setObjectName("cardValue")
-        t = QLabel(title)
-        t.setObjectName("cardTitle")
-        lay.addWidget(self.value)
-        lay.addWidget(t)
-
-    def set(self, text: str) -> None:
-        self.value.setText(text)
-
-
 # --------------------------------------------------------------------------
 # Ana pencere
 # --------------------------------------------------------------------------
@@ -175,7 +202,8 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("SplitGate")
         self.setWindowIcon(app_icon())
-        self.resize(820, 680)
+        self.setMinimumSize(900, 620)
+        self.resize(1020, 740)
         self._workers: List[QThread] = []
         self._busy = False
         self._pending_since = 0.0
@@ -183,10 +211,15 @@ class MainWindow(QMainWindow):
         self._status: Optional[Dict[str, Any]] = None
         self._last_probe: Optional[Dict[str, Any]] = None
         self._quitting = False
+        self._loading = False
+        self._dirty = False
+        self._intro_played = False
+        self._last_bytes: Optional[tuple] = None
         self._custom_cache = {"positions": "1, midsld", "delay": 1, "oob": False}
 
         self._build_ui()
         self._build_tray()
+        self._build_shortcuts()
         self._load_form(self._read_config())
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._tick)
@@ -199,22 +232,38 @@ class MainWindow(QMainWindow):
         root = QWidget()
         self.setCentralWidget(root)
         lay = QVBoxLayout(root)
-        lay.setContentsMargins(18, 14, 18, 8)
-        lay.addLayout(self._build_header())
-        self.tabs = QTabWidget()
-        lay.addWidget(self.tabs, 1)
-        self.tabs.addTab(self._build_status_tab(), _("Status"))
-        self.tabs.addTab(self._build_settings_tab(), _("Settings"))
-        self.tabs.addTab(self._build_test_tab(), _("Test"))
-        self.tabs.addTab(self._build_log_tab(), _("Log"))
-        self.tabs.addTab(self._build_about_tab(), _("About"))
+        lay.setContentsMargins(0, 0, 0, 0)
+        self.tabs = Pages()
+        lay.addWidget(self.tabs)
+        self._build_sidebar()
+        self.tabs.addTab(self._build_status_tab(), _("Status"), "home")
+        self.tabs.addTab(self._build_settings_tab(), _("Settings"), "settings")
+        self.tabs.addTab(self._build_test_tab(), _("Test"), "test")
+        self.tabs.addTab(self._build_log_tab(), _("Log"), "log")
+        self.tabs.addTab(self._build_about_tab(), _("About"), "about")
         self.tabs.currentChanged.connect(lambda _i: self._refresh_log())
+        self._connect_dirty()
+        self.toast = Toast(root)
         self.statusBar().showMessage(_("Ready"))
+        self._intro_played = False
+
+    def _build_shortcuts(self) -> None:
+        for i in range(5):
+            QShortcut(QKeySequence(f"Ctrl+{i + 1}"), self, activated=lambda i=i: self.tabs.setCurrentIndex(i))
+        QShortcut(QKeySequence("Ctrl+S"), self, activated=self._save_shortcut)
+        QShortcut(QKeySequence("Ctrl+Q"), self, activated=self._quit)
+
+    def _save_shortcut(self) -> None:
+        if self.tabs.currentIndex() == PAGE_SETTINGS and not self._busy:
+            self._save()
 
     def _warn(self, text: str, title: str = "SplitGate") -> None:
         box = QMessageBox(QMessageBox.Icon.Warning, title, text, QMessageBox.StandardButton.Ok, self)
         box.setTextFormat(Qt.TextFormat.PlainText)
         box.exec()
+
+    def _notify(self, text: str, kind: str = "ok") -> None:
+        self.toast.show_message(text, kind)
 
     def _change_language(self, code: str) -> None:
         if code == language():
@@ -222,15 +271,20 @@ class MainWindow(QMainWindow):
         if self._busy or self._workers:
             self.statusBar().showMessage(_("Please wait for the current operation to finish."), 5000)
             return
-        set_language(code)
-        saved = save_language(code)
         try:
             cfg = self._form_to_config()
         except (ConfigError, ValueError):
-            cfg = self._base_cfg
+            # geçersiz bir değer varken yeniden kurmak yazılanı sessizce silerdi
+            self.statusBar().showMessage(_("Fix the invalid setting before changing the language."), 6000)
+            return
+        set_language(code)
+        saved = save_language(code)
+        orig = self._base_cfg
         index = self.tabs.currentIndex()
         self._build_ui()
         self._load_form(cfg)
+        self._base_cfg = orig  # kaydedilmemiş değişiklikler dil değişince "kaydedilmiş" sayılmasın
+        self._mark_dirty()
         self.tabs.setCurrentIndex(index)
         self._retranslate_tray()
         self._tick()
@@ -238,100 +292,167 @@ class MainWindow(QMainWindow):
         if not saved:
             self.statusBar().showMessage(_("could not save the language choice"), 8000)
 
-    def _build_header(self) -> QHBoxLayout:
-        h = QHBoxLayout()
+    def _build_sidebar(self) -> None:
         icon = QLabel()
-        icon.setPixmap(app_icon().pixmap(56, 56))
-        h.addWidget(icon)
-        col = QVBoxLayout()
-        col.setSpacing(0)
+        icon.setPixmap(app_icon().pixmap(44, 44))
         brand = QLabel("SplitGate")
         brand.setObjectName("brand")
-        col.addWidget(brand)
-        self.state_label = QLabel(_("Stopped"))
-        self.state_label.setObjectName("hero")
-        self.state_detail = QLabel("")
-        self.state_detail.setObjectName("muted")
-        col.addWidget(self.state_label)
-        col.addWidget(self.state_detail)
-        h.addLayout(col, 1)
-        self.lang_btn = QPushButton("🌐 " + LANGUAGES[language()])
+        row = QHBoxLayout()
+        row.setSpacing(10)
+        row.addWidget(icon)
+        row.addWidget(brand, 1)
+        self.tabs.top.addLayout(row)
+        self.lang_btn = AnimButton("🌐 " + LANGUAGES[language()])
         lang_menu = QMenu(self.lang_btn)
         for code, name in LANGUAGES.items():
             act = lang_menu.addAction(name)
             act.triggered.connect(lambda _checked=False, c=code: self._change_language(c))
         self.lang_btn.setMenu(lang_menu)
-        h.addWidget(self.lang_btn)
-        self.power = QPushButton(_("Start"))
-        self.power.setObjectName("power")
-        self.power.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.power.clicked.connect(self._toggle)
-        h.addWidget(self.power)
-        return h
+        self.tabs.bottom.addWidget(self.lang_btn)
+        ver = QLabel(f"v{__version__}")
+        ver.setObjectName("version")
+        ver.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.tabs.bottom.addWidget(ver)
+
+    def _page(self, title: str, subtitle: str = "") -> tuple:
+        """Kaydırılabilir bir sayfa kabuğu; (dış parça, içerik yerleşimi) döner."""
+        outer = QWidget()
+        ol = QVBoxLayout(outer)
+        ol.setContentsMargins(0, 0, 0, 0)
+        ol.setSpacing(0)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        inner = QWidget()
+        lay = QVBoxLayout(inner)
+        lay.setContentsMargins(30, 24, 30, 20)
+        lay.setSpacing(12)
+        if title:
+            head = QLabel(title)
+            head.setObjectName("pageTitle")
+            lay.addWidget(head)
+            if subtitle:
+                lay.addWidget(muted(subtitle))
+            lay.addSpacing(4)
+        scroll.setWidget(inner)
+        ol.addWidget(scroll, 1)
+        return outer, lay
 
     def _build_status_tab(self) -> QWidget:
-        w = QWidget()
-        lay = QVBoxLayout(w)
-        grid = QGridLayout()
-        grid.setSpacing(10)
-        self.cards = {
-            "conn": Card(_("Active / total connections")), "split": Card(_("Split TLS / HTTP")),
-            "pass": Card(_("Passed through")), "traffic": Card(_("Traffic ↑ / ↓")),
-            "dns": Card(_("DNS queries (DoH)")), "cache": Card(_("DNS from cache")),
-            "uptime": Card(_("Uptime")), "err": Card(_("Error count")),
-        }
-        for i, c in enumerate(self.cards.values()):
-            grid.addWidget(c, i // 4, i % 4)
-        lay.addLayout(grid)
+        w, lay = self._page("")
+        self.welcome = QFrame()
+        self.welcome.setObjectName("banner")
+        wl = QVBoxLayout(self.welcome)
+        wl.setContentsMargins(16, 12, 16, 12)
+        wt = QLabel(_("New here? Get connected in 3 steps"))
+        wt.setStyleSheet("font-weight: 700;")
+        wl.addWidget(wt)
+        wl.addWidget(muted(_("1. Open the Test page and press “Try strategies”.\n"
+                             "2. Press “Apply recommended”.\n"
+                             "3. Come back here and press Start.")))
+        wrow = QHBoxLayout()
+        go = AnimButton(_("Open the Test page"))
+        go.clicked.connect(lambda: self.tabs.setCurrentIndex(PAGE_TEST))
+        dismiss = AnimButton(_("Got it"))
+        dismiss.clicked.connect(self._dismiss_welcome)
+        wrow.addWidget(go)
+        wrow.addWidget(dismiss)
+        wrow.addStretch(1)
+        wl.addLayout(wrow)
+        self.welcome.setVisible(not load_prefs().get("welcome_dismissed"))
+        lay.addWidget(self.welcome)
+
+        self.power = PowerButton()
+        self.power.setText(_("Start"))
+        self.power.setAccessibleName(_("Start / stop"))
+        self.power.clicked.connect(self._toggle)
+        lay.addWidget(self.power, 0, Qt.AlignmentFlag.AlignHCenter)
+        self.state_label = QLabel(_("Stopped"))
+        self.state_label.setObjectName("hero")
+        self.state_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lay.addWidget(self.state_label)
+        self.state_detail = QLabel("")
+        self.state_detail.setObjectName("muted")
+        self.state_detail.setTextFormat(Qt.TextFormat.PlainText)
+        self.state_detail.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.state_detail.setWordWrap(True)
+        lay.addWidget(self.state_detail)
+        self.hint_btn = AnimButton(_("Find a working method"), primary=True)
+        self.hint_btn.clicked.connect(lambda: self.tabs.setCurrentIndex(PAGE_TEST))
+        self.hint_btn.hide()
+        lay.addWidget(self.hint_btn, 0, Qt.AlignmentFlag.AlignHCenter)
         self.doh_label = QLabel("")
         self.doh_label.setObjectName("muted")
+        self.doh_label.setTextFormat(Qt.TextFormat.PlainText)
+        self.doh_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         lay.addWidget(self.doh_label)
         self.error_label = QLabel("")
         self.error_label.setTextFormat(Qt.TextFormat.PlainText)
         self.error_label.setWordWrap(True)
+        self.error_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.error_label.setStyleSheet(f"color: {RED};")
         lay.addWidget(self.error_label)
+
+        grid = QGridLayout()
+        grid.setSpacing(10)
+        self.cards = {
+            "conn": StatCard(_("Active / total connections")), "split": StatCard(_("Split TLS / HTTP")),
+            "pass": StatCard(_("Passed through")), "traffic": StatCard(_("Traffic ↑ / ↓")),
+            "dns": StatCard(_("DNS queries (DoH)")), "cache": StatCard(_("DNS from cache")),
+            "uptime": StatCard(_("Uptime")), "err": StatCard(_("Error count"), flash_color=RED),
+        }
+        for i, c in enumerate(self.cards.values()):
+            grid.addWidget(c, i // 4, i % 4)
+        lay.addLayout(grid)
+
+        live = QFrame()
+        live.setObjectName("panel")
+        ll = QVBoxLayout(live)
+        ll.setContentsMargins(14, 10, 14, 10)
+        head = QHBoxLayout()
+        title = QLabel(_("Live traffic"))
+        title.setStyleSheet("font-weight: 700;")
+        self.rate_label = QLabel("")
+        self.rate_label.setTextFormat(Qt.TextFormat.RichText)
+        head.addWidget(title)
+        head.addStretch(1)
+        head.addWidget(self.rate_label)
+        ll.addLayout(head)
+        self.spark = Sparkline()
+        ll.addWidget(self.spark)
+        lay.addWidget(live)
+
         box = QGroupBox(_("Startup"))
         bl = QVBoxLayout(box)
-        self.autostart = QCheckBox(_("Start automatically at boot"))
+        self.autostart = Switch(_("Start automatically at boot"))
         self.autostart.clicked.connect(self._autostart_clicked)
         bl.addWidget(self.autostart)
-        note = QLabel(_("The service runs at the system level. Closing this window does not stop it; "
-                        "use the button above, or Quit in the tray menu, to stop it."))
-        note.setObjectName("muted")
-        note.setWordWrap(True)
-        bl.addWidget(note)
+        bl.addWidget(muted(_("The service runs at the system level. Closing this window does not stop it; "
+                             "use the button above, or Quit in the tray menu, to stop it.")))
         lay.addWidget(box)
         lay.addStretch(1)
         return w
 
-    def _build_settings_tab(self) -> QWidget:
-        outer = QWidget()
-        ol = QVBoxLayout(outer)
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
-        inner = QWidget()
-        lay = QVBoxLayout(inner)
+    def _dismiss_welcome(self) -> None:
+        save_prefs(welcome_dismissed=True)
+        self.welcome.hide()
 
-        # Çalışma modu
-        g = QGroupBox(_("Operating mode"))
-        f = QFormLayout(g)
-        self.f_mode = combo_with(MODE_ITEMS)
-        self.f_mode.currentIndexChanged.connect(self._update_enabled)
-        self.f_socks_port = QSpinBox()
-        self.f_socks_port.setRange(1024, 65535)
-        self.f_gateway = QCheckBox(_("Also process traffic passing through this computer (shared)"))
-        self.f_ipv6 = QCheckBox(_("Use IPv6"))
-        f.addRow(_("Mode"), self.f_mode)
-        f.addRow(_("SOCKS5/HTTP port"), self.f_socks_port)
-        f.addRow("", self.f_gateway)
-        f.addRow("", self.f_ipv6)
-        lay.addWidget(g)
+    def _section(self, title: str, expanded: bool) -> tuple:
+        sec = CollapsibleSection(title, expanded)
+        f = QFormLayout(sec.body)
+        f.setContentsMargins(16, 2, 16, 14)
+        f.setHorizontalSpacing(14)
+        f.setVerticalSpacing(10)
+        f.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+        f.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
+        return sec, f
+
+    def _build_settings_tab(self) -> QWidget:
+        outer, lay = self._page(_("Settings"), _("Changes are applied when you press “Save and apply”."))
 
         # Strateji
-        g = QGroupBox(_("Splitting strategy"))
-        f = QFormLayout(g)
+        sec, f = self._section(_("Splitting strategy"), True)
         self.f_preset = QComboBox()
         for key, p in PRESETS.items():
             self.f_preset.addItem(_(p["label"]), key)
@@ -342,21 +463,24 @@ class MainWindow(QMainWindow):
         self.f_delay = QSpinBox()
         self.f_delay.setRange(0, 200)
         self.f_delay.setSuffix(" ms")
-        self.f_oob = QCheckBox(_("Send an OOB byte after the first piece (experimental)"))
-        self.f_hostcase = QCheckBox(_("Mix the letter case of the HTTP 'Host:' header"))
-        self.f_httpsplit = QCheckBox(_("Also split plain HTTP requests"))
+        self.f_oob = Switch(_("Send an OOB byte after the first piece (experimental)"))
+        self.f_hostcase = Switch(_("Mix the letter case of the HTTP 'Host:' header"))
+        self.f_httpsplit = Switch(_("Also split plain HTTP requests"))
         f.addRow(_("Preset"), self.f_preset)
+        find = AnimButton(_("Find the best method for me"))
+        find.clicked.connect(lambda: self.tabs.setCurrentIndex(PAGE_TEST))
+        f.addRow(muted(_("Not sure which preset works on your network? SplitGate can test them for you.")))
+        f.addRow(find)
         f.addRow(_("Split positions"), self.f_positions)
         f.addRow(_("Delay between pieces"), self.f_delay)
-        f.addRow("", self.f_oob)
-        f.addRow("", self.f_hostcase)
-        f.addRow("", self.f_httpsplit)
-        lay.addWidget(g)
+        f.addRow(self.f_oob)
+        f.addRow(self.f_hostcase)
+        f.addRow(self.f_httpsplit)
+        lay.addWidget(sec)
 
         # DNS
-        g = QGroupBox(_("DNS (DoH against DNS poisoning)"))
-        f = QFormLayout(g)
-        self.f_dns_on = QCheckBox(_("Resolve DNS queries over encrypted DoH"))
+        sec, f = self._section(_("DNS (DoH against DNS poisoning)"), True)
+        self.f_dns_on = Switch(_("Resolve DNS queries over encrypted DoH"))
         self.f_dns_on.clicked.connect(self._update_enabled)
         self.f_dns_primary = combo_with(DNS_ITEMS)
         self.f_dns_primary.currentIndexChanged.connect(self._update_enabled)
@@ -368,86 +492,107 @@ class MainWindow(QMainWindow):
         self.f_dns_cache = QSpinBox()
         self.f_dns_cache.setRange(0, 86400)
         self.f_dns_cache.setSuffix(_(" s"))
-        f.addRow("", self.f_dns_on)
+        f.addRow(self.f_dns_on)
         f.addRow(_("Primary provider"), self.f_dns_primary)
         f.addRow(_("Custom: host"), self.f_dns_host)
         f.addRow(_("Custom: IP addresses"), self.f_dns_ips)
         f.addRow(_("Custom: path"), self.f_dns_path)
         f.addRow(_("Cache duration (upper limit)"), self.f_dns_cache)
-        lay.addWidget(g)
+        lay.addWidget(sec)
+
+        adv = QLabel(_("Advanced").upper())
+        adv.setObjectName("groupTitle")
+        lay.addSpacing(6)
+        lay.addWidget(adv)
+
+        # Çalışma modu
+        sec, f = self._section(_("Operating mode"), False)
+        self.f_mode = combo_with(MODE_ITEMS)
+        self.f_mode.currentIndexChanged.connect(self._update_enabled)
+        self.f_socks_port = QSpinBox()
+        self.f_socks_port.setRange(1024, 65535)
+        self.f_gateway = Switch(_("Also process traffic passing through this computer (shared)"))
+        self.f_ipv6 = Switch(_("Use IPv6"))
+        f.addRow(_("Mode"), self.f_mode)
+        f.addRow(_("SOCKS5/HTTP port"), self.f_socks_port)
+        f.addRow(self.f_gateway)
+        f.addRow(self.f_ipv6)
+        lay.addWidget(sec)
 
         # Trafik
-        g = QGroupBox(_("Traffic"))
-        f = QFormLayout(g)
+        sec, f = self._section(_("Traffic"), False)
         self.f_ports = QLineEdit()
         self.f_ports.setPlaceholderText("80, 443")
-        self.f_quic = QCheckBox(_("Block QUIC/HTTP3 (browsers fall back to TCP; required for splitting)"))
+        self.f_quic = Switch(_("Block QUIC/HTTP3 (browsers fall back to TCP; required for splitting)"))
         self.f_filter = combo_with(FILTER_ITEMS)
         self.f_filter.currentIndexChanged.connect(self._update_enabled)
         self.f_domains = QPlainTextEdit()
         self.f_domains.setPlaceholderText(_("One domain per line (e.g. discord.com)"))
         self.f_domains.setFixedHeight(80)
         f.addRow(_("Ports to redirect"), self.f_ports)
-        f.addRow("", self.f_quic)
+        f.addRow(self.f_quic)
         f.addRow(_("Sites to apply splitting to"), self.f_filter)
         f.addRow(_("Domain list"), self.f_domains)
-        lay.addWidget(g)
+        lay.addWidget(sec)
 
         # Günlük
-        g = QGroupBox(_("Log"))
-        f = QFormLayout(g)
+        sec, f = self._section(_("Log"), False)
         self.f_loglevel = combo_with(LOG_LEVELS)
-        self.f_logdomains = QCheckBox(_("Write visited domain names to the log (privacy risk)"))
+        self.f_logdomains = Switch(_("Write visited domain names to the log (privacy risk)"))
         f.addRow(_("Detail level"), self.f_loglevel)
-        f.addRow("", self.f_logdomains)
-        lay.addWidget(g)
+        f.addRow(self.f_logdomains)
+        lay.addWidget(sec)
         lay.addStretch(1)
-        scroll.setWidget(inner)
-        ol.addWidget(scroll, 1)
 
-        row = QHBoxLayout()
-        reset = QPushButton(_("Reset to defaults"))
-        reset.clicked.connect(lambda: self._load_form(default_config()))
-        self.save_btn = QPushButton(_("Save and apply"))
-        self.save_btn.setObjectName("primary")
+        bar = QFrame()
+        bar.setObjectName("footer")
+        row = QHBoxLayout(bar)
+        row.setContentsMargins(30, 10, 30, 10)
+        reset = AnimButton(_("Reset to defaults"))
+        reset.clicked.connect(lambda: self._load_form(default_config(), keep_base=True))
+        self.dirty_label = QLabel("● " + _("Unsaved changes"))
+        self.dirty_label.setObjectName("dirty")
+        self.dirty_label.hide()
+        self.save_btn = AnimButton(_("Save and apply"), primary=True)
+        self.save_btn.setToolTip("Ctrl+S")
         self.save_btn.clicked.connect(self._save)
         row.addWidget(reset)
         row.addStretch(1)
+        row.addWidget(self.dirty_label)
         row.addWidget(self.save_btn)
-        ol.addLayout(row)
+        outer.layout().addWidget(bar)
         return outer
 
     def _build_test_tab(self) -> QWidget:
-        w = QWidget()
-        lay = QVBoxLayout(w)
+        w, lay = self._page(_("Test"), _("Find out which method opens the sites that are blocked for you."))
         g = QGroupBox(_("Automatic strategy finder"))
         gl = QVBoxLayout(g)
-        info = QLabel(_("Each strategy is tried on the sites below with a real TLS handshake. "
-                        "The result does not depend on system DNS (DoH is used). "
-                        "An administrator password is requested."))
-        info.setWordWrap(True)
-        info.setObjectName("muted")
-        gl.addWidget(info)
+        gl.addWidget(muted(_("Each strategy is tried on the sites below with a real TLS handshake. "
+                             "The result does not depend on system DNS (DoH is used). "
+                             "An administrator password is requested.")))
         self.t_domains = QLineEdit()
         self.t_domains.setPlaceholderText("discord.com, x.com, roblox.com")
         gl.addWidget(self.t_domains)
         row = QHBoxLayout()
-        self.probe_btn = QPushButton(_("Try strategies"))
-        self.probe_btn.setObjectName("primary")
+        self.probe_btn = AnimButton(_("Try strategies"), primary=True)
         self.probe_btn.clicked.connect(self._probe)
-        self.apply_best = QPushButton(_("Apply recommended"))
+        self.apply_best = AnimButton(_("Apply recommended"))
         self.apply_best.setEnabled(False)
         self.apply_best.clicked.connect(self._apply_best)
         row.addWidget(self.probe_btn)
         row.addWidget(self.apply_best)
         row.addStretch(1)
         gl.addLayout(row)
+        self.probe_busy = BusyBar()
+        gl.addWidget(self.probe_busy)
         self.table = QTableWidget(0, 3)
         self.table.setHorizontalHeaderLabels([_("Strategy"), _("Sites opened"), _("Avg. time")])
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.verticalHeader().setVisible(False)
+        self.table.setAlternatingRowColors(True)
+        self.table.setMinimumHeight(220)
         gl.addWidget(self.table, 1)
         self.probe_msg = QLabel("")
         self.probe_msg.setTextFormat(Qt.TextFormat.PlainText)
@@ -458,7 +603,7 @@ class MainWindow(QMainWindow):
         g = QGroupBox(_("Quick connection test (through the system)"))
         gl = QHBoxLayout(g)
         self.q_host = QLineEdit("discord.com")
-        self.q_btn = QPushButton(_("Try"))
+        self.q_btn = AnimButton(_("Try"))
         self.q_btn.clicked.connect(self._quick_test)
         self.q_res = QLabel("")
         self.q_res.setTextFormat(Qt.TextFormat.PlainText)
@@ -469,26 +614,49 @@ class MainWindow(QMainWindow):
         return w
 
     def _build_log_tab(self) -> QWidget:
-        w = QWidget()
-        lay = QVBoxLayout(w)
+        w, lay = self._page(_("Log"), _("What the service has been doing (newest at the bottom)."))
+        top = QHBoxLayout()
+        self.log_filter = QLineEdit()
+        self.log_filter.setPlaceholderText(_("Filter log lines…"))
+        self.log_filter.setClearButtonEnabled(True)
+        self.log_filter.textChanged.connect(lambda _t: self._refresh_log())
+        self.log_follow = Switch(_("Follow new lines"))
+        self.log_follow.setChecked(True)
+        top.addWidget(self.log_filter, 1)
+        top.addWidget(self.log_follow)
+        lay.addLayout(top)
         self.log_view = QPlainTextEdit()
         self.log_view.setReadOnly(True)
         self.log_view.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
         mono = QFont("monospace")
         mono.setStyleHint(QFont.StyleHint.Monospace)
         self.log_view.setFont(mono)
+        self.log_view.setMinimumHeight(300)
         lay.addWidget(self.log_view, 1)
         row = QHBoxLayout()
-        copy = QPushButton(_("Copy"))
-        copy.clicked.connect(lambda: QApplication.clipboard().setText(self.log_view.toPlainText()))
+        copy = AnimButton(_("Copy"))
+        copy.clicked.connect(self._copy_log)
         row.addStretch(1)
         row.addWidget(copy)
         lay.addLayout(row)
         return w
 
+    def _copy_log(self) -> None:
+        QApplication.clipboard().setText(self.log_view.toPlainText())
+        self._notify(_("Copied to clipboard"))
+
     def _build_about_tab(self) -> QWidget:
-        w = QWidget()
-        lay = QVBoxLayout(w)
+        w, lay = self._page("")
+        head = QHBoxLayout()
+        logo = QLabel()
+        logo.setPixmap(app_icon().pixmap(72, 72))
+        head.addWidget(logo)
+        chip = QLabel(f"v{__version__}")
+        chip.setObjectName("chip")
+        chip.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        head.addWidget(chip)
+        head.addStretch(1)
+        lay.addLayout(head)
         t = QLabel(_(
             "<h2>SplitGate {version}</h2>"
             "<p>A DPI bypass tool for Linux with a GUI, written from scratch.</p>"
@@ -501,12 +669,28 @@ class MainWindow(QMainWindow):
             "<p>This tool is only meant to get around access blocks; it is not a VPN and does not "
             "hide your IP address. You are responsible for how you use it.</p>"
             "<p>© 2026 Project Gamers — License: GPL-3.0-or-later</p>", version=__version__))
+        t.setObjectName("about_text")
         t.setTextFormat(Qt.TextFormat.RichText)
         t.setWordWrap(True)
         t.setAlignment(Qt.AlignmentFlag.AlignTop)
         lay.addWidget(t)
+
+        box = QGroupBox(_("Interface"))
+        bl = QVBoxLayout(box)
+        self.anim_switch = Switch(_("Enable animations"))
+        self.anim_switch.setChecked(bool(load_prefs().get("animations", True)))
+        self.anim_switch.clicked.connect(self._set_animations)
+        bl.addWidget(self.anim_switch)
+        bl.addWidget(muted(_("Ctrl+1 … Ctrl+5: switch page\nCtrl+S: save and apply the settings\n"
+                             "Ctrl+Q: quit")))
+        lay.addWidget(box)
         lay.addStretch(1)
         return w
+
+    def _set_animations(self, on: bool) -> None:
+        set_motion(on)
+        save_prefs(animations=on)
+        self.power.refresh()
 
     # ---- tepsi -------------------------------------------------------------
     def _build_tray(self) -> None:
@@ -573,6 +757,13 @@ class MainWindow(QMainWindow):
         else:
             event.accept()
 
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        if not self._intro_played:
+            self._intro_played = True
+            for i, card in enumerate(self.cards.values()):
+                fade_in(card, 260, delay=80 + i * 45)
+
     # ---- yapılandırma <-> form --------------------------------------------
     @staticmethod
     def _read_config() -> Dict[str, Any]:
@@ -581,34 +772,70 @@ class MainWindow(QMainWindow):
         except ConfigError:
             return default_config()
 
-    def _load_form(self, cfg: Dict[str, Any]) -> None:
+    def _form_widgets(self) -> List[QWidget]:
+        return [v for k, v in vars(self).items() if k.startswith("f_") or k == "t_domains"]
+
+    def _connect_dirty(self) -> None:
+        for w in self._form_widgets():
+            if isinstance(w, QComboBox):
+                w.currentIndexChanged.connect(self._mark_dirty)
+            elif isinstance(w, QCheckBox):
+                w.toggled.connect(self._mark_dirty)
+            elif isinstance(w, QSpinBox):
+                w.valueChanged.connect(self._mark_dirty)
+            elif isinstance(w, (QLineEdit, QPlainTextEdit)):
+                w.textChanged.connect(self._mark_dirty)
+
+    def _mark_dirty(self, *_args) -> None:
+        if self._loading:
+            return
+        try:
+            dirty = self._form_to_config() != self._base_cfg
+        except (ConfigError, ValueError):
+            dirty = True  # geçersiz değer de "kaydedilmemiş değişiklik"tir
+        if dirty and not self._dirty:
+            self.dirty_label.show()
+            fade_in(self.dirty_label, 180)
+        elif not dirty:
+            self.dirty_label.hide()
+        self._dirty = dirty
+
+    def _load_form(self, cfg: Dict[str, Any], keep_base: bool = False) -> None:
         cfg = normalize(cfg)
         st, dns = cfg["strategy"], cfg["dns"]
-        set_combo(self.f_mode, cfg["mode"])
-        self.f_socks_port.setValue(cfg["socks_port"])
-        self.f_gateway.setChecked(cfg["gateway"])
-        self.f_ipv6.setChecked(cfg["ipv6"])
-        self._custom_cache = {"positions": ", ".join(st["positions"]), "delay": st["delay_ms"],
-                              "oob": st["oob"]}
-        set_combo(self.f_preset, st["preset"])
-        self._preset_changed()
-        self.f_hostcase.setChecked(st["http_host_case"])
-        self.f_httpsplit.setChecked(st["http_split"])
-        self.f_dns_on.setChecked(dns["enabled"])
-        set_combo(self.f_dns_primary, dns["providers"][0])
-        self.f_dns_host.setText(dns["custom"]["host"])
-        self.f_dns_ips.setText(", ".join(dns["custom"]["ips"]))
-        self.f_dns_path.setText(dns["custom"]["path"])
-        self.f_dns_cache.setValue(dns["cache_seconds"])
-        self.f_ports.setText(", ".join(str(p) for p in cfg["ports"]))
-        self.f_quic.setChecked(cfg["quic_block"])
-        set_combo(self.f_filter, cfg["domain_filter"]["mode"])
-        self.f_domains.setPlainText("\n".join(cfg["domain_filter"]["domains"]))
-        set_combo(self.f_loglevel, cfg["log_level"])
-        self.f_logdomains.setChecked(cfg["log_domains"])
-        self.t_domains.setText(", ".join(cfg["probe_domains"]))
-        self._base_cfg = cfg
-        self._update_enabled()
+        self._loading = True
+        try:
+            set_combo(self.f_mode, cfg["mode"])
+            self.f_socks_port.setValue(cfg["socks_port"])
+            self.f_gateway.setChecked(cfg["gateway"])
+            self.f_ipv6.setChecked(cfg["ipv6"])
+            self._custom_cache = {"positions": ", ".join(st["positions"]), "delay": st["delay_ms"],
+                                  "oob": st["oob"]}
+            set_combo(self.f_preset, st["preset"])
+            self._preset_changed()
+            self.f_hostcase.setChecked(st["http_host_case"])
+            self.f_httpsplit.setChecked(st["http_split"])
+            self.f_dns_on.setChecked(dns["enabled"])
+            set_combo(self.f_dns_primary, dns["providers"][0])
+            self.f_dns_host.setText(dns["custom"]["host"])
+            self.f_dns_ips.setText(", ".join(dns["custom"]["ips"]))
+            self.f_dns_path.setText(dns["custom"]["path"])
+            self.f_dns_cache.setValue(dns["cache_seconds"])
+            self.f_ports.setText(", ".join(str(p) for p in cfg["ports"]))
+            self.f_quic.setChecked(cfg["quic_block"])
+            set_combo(self.f_filter, cfg["domain_filter"]["mode"])
+            self.f_domains.setPlainText("\n".join(cfg["domain_filter"]["domains"]))
+            set_combo(self.f_loglevel, cfg["log_level"])
+            self.f_logdomains.setChecked(cfg["log_domains"])
+            self.t_domains.setText(", ".join(cfg["probe_domains"]))
+            if not keep_base:
+                self._base_cfg = cfg
+            self._update_enabled()
+        finally:
+            self._loading = False
+        self._dirty = False
+        self.dirty_label.hide()
+        self._mark_dirty()
 
     def _preset_changed(self) -> None:
         key = self.f_preset.currentData()
@@ -739,6 +966,8 @@ class MainWindow(QMainWindow):
                 self._warn(res.get("msg", _("Could not save")))
                 return
             self._base_cfg = cfg
+            self._mark_dirty()
+            self._notify(_("Settings saved"))
             if was_running:
                 self._pending_target = True
                 self._pending_since = time.monotonic()
@@ -758,8 +987,10 @@ class MainWindow(QMainWindow):
         self.table.setRowCount(0)
         self.apply_best.setEnabled(False)
         self.probe_msg.setText(_("Trying… (this can take up to about a minute)"))
+        self.probe_busy.start()
 
         def done(res: Dict[str, Any]) -> None:
+            self.probe_busy.stop()
             if not res.get("ok"):
                 self.probe_msg.setText(res.get("msg", _("Test failed")))
                 return
@@ -772,6 +1003,7 @@ class MainWindow(QMainWindow):
         rows = res["results"]
         best = res.get("best")
         self.table.setRowCount(len(rows))
+        best_rows = []
         for i, r in enumerate(rows):
             avg = f"{r['avg_ms']} ms" if r["avg_ms"] is not None else "–"
             items = [QTableWidgetItem(_(r["label"])), QTableWidgetItem(f"{r['ok']}/{r['total']}"),
@@ -780,9 +1012,19 @@ class MainWindow(QMainWindow):
                             for d, v in r["domains"].items())
             for j, it in enumerate(items):
                 it.setToolTip(tip)
-                if r["preset"] == best:
-                    it.setBackground(QColor(46, 160, 67, 70))
                 self.table.setItem(i, j, it)
+            if r["preset"] == best:
+                best_rows.append(i)
+        if best_rows:
+            def paint(v) -> None:
+                # satırlar animasyon sürerken silinebilir (yeni test); öğeleri her karede yeniden bul
+                for i in best_rows:
+                    for j in range(3):
+                        it = self.table.item(i, j)
+                        if it is not None:
+                            it.setBackground(QColor(46, 160, 67, int(v)))
+
+            tween(self.table, 0, 70, 700, paint)
         if best:
             label = _(next(r["label"] for r in rows if r["preset"] == best))
             self.probe_msg.setText(_("Recommended: {label}.{extra}", label=label, extra=""))
@@ -815,6 +1057,7 @@ class MainWindow(QMainWindow):
             else:
                 self.q_res.setText(f"✖ {res['err'][:70]}")
                 self.q_res.setStyleSheet(f"color: {RED};")
+            fade_in(self.q_res, 220)
 
         worker.done.connect(done)
         worker.start()
@@ -837,8 +1080,37 @@ class MainWindow(QMainWindow):
         self.render_status(self._status)
         if self._tick_count % 5 == 1:
             self._sync_autostart()
-        if self.tabs.currentIndex() == 3 and self._tick_count % 2 == 0:
+        if self.tabs.currentIndex() == PAGE_LOG and self._tick_count % 2 == 0:
             self._refresh_log()
+
+    @staticmethod
+    def _set_line(label: QLabel, text: str) -> None:
+        label.setText(text)
+        label.setVisible(bool(text))
+
+    def _update_rate(self, st: Optional[Dict[str, Any]]) -> None:
+        """Toplam bayt sayaçlarından anlık hız çıkarır ve grafiğe işler."""
+        if not st:
+            if self._last_bytes is not None:
+                self._last_bytes = None
+                self.spark.clear()
+                self.rate_label.setText("")
+            return
+        s = st["stats"]
+        now, up, down = time.monotonic(), s["bytes_up"], s["bytes_down"]
+        if self._last_bytes is None:
+            self._last_bytes = (now, up, down)
+            return
+        t0, up0, down0 = self._last_bytes
+        if now - t0 < 0.5:  # aynı saniyede art arda çağrılırsa yanlış hız çıkmasın
+            return
+        dt = now - t0
+        rate_up, rate_down = max(0.0, (up - up0) / dt), max(0.0, (down - down0) / dt)
+        self._last_bytes = (now, up, down)
+        self.spark.push(rate_down, rate_up)
+        self.rate_label.setText(
+            f'<span style="color:{Sparkline.COLORS[0]}">●</span> ↓ {fmt_bytes(rate_down)}/s &nbsp; '
+            f'<span style="color:{Sparkline.COLORS[1]}">●</span> ↑ {fmt_bytes(rate_up)}/s')
 
     def render_status(self, st: Optional[Dict[str, Any]]) -> None:
         pending = (self._pending_target is not None
@@ -872,27 +1144,42 @@ class MainWindow(QMainWindow):
             self.cards["uptime"].set(fmt_duration(s["uptime"]))
             self.cards["err"].set(str(s["errors"]))
             doh = st.get("doh", [])
-            self.doh_label.setText(_("DoH providers: ") + ", ".join(
+            self._set_line(self.doh_label, _("DoH providers: ") + ", ".join(
                 f"{d['name']} {'✔' if d['ok'] else '✖'}" for d in doh) if doh else "")
-            self.error_label.setText(_("Last error: {err}", err=s["last_error"]) if s.get("last_error") else "")
+            self._set_line(self.error_label,
+                           _("Last error: {err}", err=s["last_error"]) if s.get("last_error") else "")
             if st["mode"] == "socks":
                 self.state_detail.setText(self.state_detail.text() + _(" · Set it as the proxy in your browser"))
+            running = st.get("state") == "running"
+            if st.get("state") == "stopping" or (running and st.get("check") == "checking"):
+                look = (AMBER, "spin")
+            elif color == GREEN:
+                look = (GREEN, "pulse")
+            elif color == RED:
+                look = (RED, "idle")
+            else:
+                look = (AMBER, "idle")
+            self.hint_btn.setVisible(running and st.get("check") == "failed")
         else:
             for c in self.cards.values():
                 c.set("–")
-            self.doh_label.setText("")
-            self.error_label.setText("")
+            self._set_line(self.doh_label, "")
+            self._set_line(self.error_label, "")
+            self.hint_btn.hide()
             if pending:
                 color, text, btn = AMBER, _("Starting…"), _("Stop")
+                look = (AMBER, "spin")
             else:
                 color, text, btn = GREY, _("Stopped"), _("Start")
+                look = (GREY, "idle")
             self.state_detail.setText("" if pending else _("Your connection flows directly"))
         if st is None and pending:
             btn = _("Please wait…")
+        self._update_rate(st)
         self.state_label.setText(text)
         self.state_label.setStyleSheet(f"color: {color};")
         self.power.setText(btn)
-        self.power.setStyleSheet(f"background-color: {GREEN if not st and not pending else (RED if st else AMBER)};")
+        self.power.set_look(look[0], look[1], neutral=st is None and not pending)
         if self.tray is not None:
             self.tray.setToolTip(f"SplitGate — {text}")
             self.tray_toggle.setText(btn if btn != _("Please wait…") else _("Start"))
@@ -901,15 +1188,19 @@ class MainWindow(QMainWindow):
         try:
             with open(LOG_FILE, "r", encoding="utf-8", errors="replace") as fh:
                 lines = fh.readlines()[-300:]
+            needle = self.log_filter.text().strip().lower()
+            if needle:
+                lines = [ln for ln in lines if needle in ln.lower()]
             text = "".join(lines)
+            if not text and needle:
+                text = _("(No log line matches the filter.)")
         except OSError:
             text = _("(The log does not exist yet; it will appear here once the service starts.)")
         if text != self.log_view.toPlainText():
             bar = self.log_view.verticalScrollBar()
-            at_end = bar.value() >= bar.maximum() - 4
+            keep = bar.value()
             self.log_view.setPlainText(text)
-            if at_end:
-                bar.setValue(bar.maximum())
+            bar.setValue(bar.maximum() if self.log_follow.isChecked() else keep)
 
 
 def choose_language() -> Optional[str]:
@@ -918,6 +1209,12 @@ def choose_language() -> Optional[str]:
     dlg.setWindowTitle("SplitGate — Language / Dil")
     dlg.setWindowIcon(app_icon())
     lay = QVBoxLayout(dlg)
+    lay.setContentsMargins(28, 24, 28, 24)
+    lay.setSpacing(10)
+    logo = QLabel()
+    logo.setPixmap(app_icon().pixmap(64, 64))
+    logo.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    lay.addWidget(logo)
     title = QLabel("Choose your language")
     title.setObjectName("hero")
     title.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -929,9 +1226,9 @@ def choose_language() -> Optional[str]:
         dlg.accept()
 
     for code, name in LANGUAGES.items():
-        b = QPushButton(name)
-        b.setMinimumHeight(42)
-        b.setMinimumWidth(260)
+        b = AnimButton(name)
+        b.setMinimumHeight(44)
+        b.setMinimumWidth(280)
         b.clicked.connect(lambda _checked=False, c=code: pick(c))
         lay.addWidget(b)
     dlg.exec()
@@ -963,6 +1260,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     if lock == single.FAILED:
         print("SplitGate: could not create the single-instance lock; running without it", file=sys.stderr)
     init_language()
+    set_motion(bool(load_prefs().get("animations", True)) and not os.environ.get("DPIGEC_NO_ANIM"))
     if normalize_language(os.environ.get("DPIGEC_LANG")) is None and saved_language() is None:
         picked = choose_language()
         if picked is not None:

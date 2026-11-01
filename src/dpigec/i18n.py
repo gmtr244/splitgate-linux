@@ -40,30 +40,41 @@ def pref_path() -> str:
     return os.path.join(base, "dpigec", "ui.json")
 
 
-def saved_language() -> Optional[str]:
+def load_prefs() -> Dict[str, object]:
     try:
         with open(pref_path(), "r", encoding="utf-8") as fh:
             data = json.load(fh)
     except (OSError, ValueError):
-        return None
-    return normalize_language(data.get("lang")) if isinstance(data, dict) else None
+        return {}
+    return data if isinstance(data, dict) else {}
 
 
-def save_language(code: str) -> bool:
-    code = normalize_language(code)
-    if code is None:
-        return False
+def save_prefs(**updates: object) -> bool:
+    """Merges the given keys into the per-user UI preferences file (other keys are kept)."""
+    data = load_prefs()
+    data.update(updates)
     path = pref_path()
     try:
         d = os.path.dirname(path)
         os.makedirs(d, exist_ok=True)
         fd, tmp = tempfile.mkstemp(prefix=".ui-", dir=d)
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump({"lang": code}, fh)
+            json.dump(data, fh)
         os.replace(tmp, path)
     except OSError:
         return False
     return True
+
+
+def saved_language() -> Optional[str]:
+    return normalize_language(load_prefs().get("lang"))
+
+
+def save_language(code: str) -> bool:
+    code = normalize_language(code)
+    if code is None:
+        return False
+    return save_prefs(lang=code)
 
 
 def init() -> str:

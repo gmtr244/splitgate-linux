@@ -58,20 +58,29 @@ Kaldırma: `./uninstall.sh` (`--purge` ayarları da siler).
 
 ## Kullanım
 
-**Arayüz:** uygulama menüsünden *SplitGate* ya da `dpigec-gui`.
+**Arayüz:** uygulama menüsünden *SplitGate* ya da `dpigec-gui`. Sayfalar sol yan menüdedir
+(*Durum*, *Ayarlar*, *Test*, *Günlük*, *Hakkında*; `Ctrl+1` … `Ctrl+5`). İlk açılışta *Durum* sayfasındaki kısa
+"3 adım" kartı kurulumda size yol gösterir.
 
-1. **Test** sekmesi → *Stratejileri dene*: ağınızda hangi bölme yönteminin çalıştığını gerçek TLS
+1. **Test** sayfası → *Stratejileri dene*: ağınızda hangi bölme yönteminin çalıştığını gerçek TLS
    el sıkışmasıyla ölçer; *Önerileni uygula* ile kaydeder. Denenen siteler butonun üstündeki kutuda: senin için
    engelli olan siteleri oraya yazın (varsayılanlar yalnızca örnektir). Komut satırında:
    `dpigec probe ornek.org ornek.net`.
-2. Üstteki **Başlat** düğmesine basın. (Yönetici şifresi istenir; polkit onu birkaç dakika hatırlar.)
-3. *Durum* sekmesinden *açılışta otomatik başlat*ı işaretleyebilirsiniz.
+2. *Durum* sayfasındaki büyük güç düğmesine (**Başlat**) basın. (Yönetici şifresi istenir; polkit onu birkaç dakika hatırlar.)
+3. *Durum* sayfasının altından *açılışta otomatik başlat*ı açabilirsiniz.
 4. Sistem tepsisi varsa pencereyi X ile kapatmak onu yalnızca gizler, servis çalışmaya devam eder; tepsi menüsündeki **Çık** servisi durdurur ve çıkar. (Tepsi yoksa pencereyi kapatmak yalnızca arayüzden çıkar, servis çalışmaya devam eder.)
 5. Arayüz yalnızca bir kez açılır: yeniden başlatmak ikinci bir pencere açmaz, çalışanı öne getirir (tepside
    gizliyse gösterir). Gerçekten kapatıldıysa yenisi açılır.
 6. Üstteki büyük durum, **Çalışıyor** (yeşil) yazısını yalnızca gerçek kontrol başarılıysa gösterir; yani seçili yöntem
    bölmesiz bağlantının açamadığı bir siteyi açıyorsa. Aksi halde *Kontrol ediliyor…*, *Bağlı (henüz kontrol
    edilmedi)*, *Bağlı, siteler engelli değil* ya da kırmızı *Bu ağda çalışmıyor* yazar ve nedeni altında gösterir.
+   Kontrol başarısız olursa *Çalışan bir yöntem bul* düğmesi sizi *Test* sayfasına götürür.
+7. *Ayarlar* sayfası sık kullanılan seçenekleri (bölme stratejisi, DNS) başta gösterir, gerisini **Gelişmiş**
+   altında (kapalı) tutar. Kaydedene kadar *Kaydet ve uygula* (`Ctrl+S`) yanında *Kaydedilmemiş değişiklikler*
+   uyarısı görünür.
+8. *Durum* sayfasında canlı indirme/yükleme grafiği de vardır. Arayüzün her yeri animasyonludur; *Hakkında →
+   Animasyonları aç* ile kapatabilirsiniz (ya da `DPIGEC_NO_ANIM=1` ile başlatın). Pencere tepside gizliyken
+   animasyonlar durur, işlemciyi kullanmaz.
 
 **Komut satırı:**
 
