@@ -206,26 +206,43 @@ class CheckerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_system_dns_ok_tries_up_to_three_names_and_survives_errors(self):
         import socket
+        import time
         from unittest import mock
-        loop = asyncio.get_running_loop()
         tried = []
 
-        async def gai(host, port, family=0, type=0):
+        def gai(host, port, family=0, type=0):
             tried.append((host, family))
             if host == "c.example":
                 return [(socket.AF_INET6, type, 6, "", ("2001:db8::1", 443, 0, 0))]
             if host == "slow.example":
-                await asyncio.sleep(10)
+                time.sleep(2)
             raise socket.gaierror(-2, "Name or service not known")
 
-        with mock.patch.object(loop, "getaddrinfo", gai):
-            self.assertTrue(await checker.system_dns_ok(["a.example", "slow.example", "c.example"], timeout=0.05))
+        with mock.patch.object(checker.socket, "getaddrinfo", gai):
+            self.assertTrue(await checker.system_dns_ok(["a.example", "slow.example", "c.example"], timeout=0.2))
             self.assertEqual([h for h, _ in tried], ["a.example", "slow.example", "c.example"])
             self.assertTrue(all(f == socket.AF_UNSPEC for _, f in tried))  # IPv6-only ağlar da sayılır
             tried.clear()
             self.assertFalse(await checker.system_dns_ok(["a.example", "b.example", "d.example", "c.example"],
-                                                         timeout=0.05))
+                                                         timeout=0.2))
             self.assertEqual(len(tried), 3)
+
+    def test_hung_system_resolver_does_not_block_shutdown(self):
+        # Servis SIGTERM'de takılmasın: asyncio.run, askıdaki getaddrinfo'yu beklememeli.
+        import time
+        from unittest import mock
+
+        def hung(*a, **k):
+            time.sleep(5)
+            raise OSError("late")
+
+        async def main():
+            return await checker.system_dns_ok(["a.example"], timeout=0.1)
+
+        with mock.patch.object(checker.socket, "getaddrinfo", hung):
+            t0 = time.monotonic()
+            self.assertFalse(asyncio.run(main()))
+            self.assertLess(time.monotonic() - t0, 2.0)
 
     def test_networks_keyed_by_gateway_mac(self):
         a = netwatch.NetId("wifi:wlan0:192.168.1.1", "Wi-Fi", "aa:aa:aa:aa:aa:aa")

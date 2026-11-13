@@ -14,6 +14,7 @@ import logging
 import os
 import socket
 import tempfile
+import threading
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from . import probe
@@ -36,6 +37,45 @@ ProbeFn = Callable[..., Awaitable[List[Dict[str, Any]]]]
 SysDnsFn = Callable[[List[str]], Awaitable[bool]]
 
 SYSTEM_DNS_TIMEOUT = 8.0
+# Askıda kalmış (çözücü yanıt vermiyor) getaddrinfo iş parçacıkları üst üste binmesin.
+_SYSDNS_SLOTS = threading.BoundedSemaphore(3)
+
+
+def _getaddrinfo_daemon(loop: asyncio.AbstractEventLoop, host: str) -> "asyncio.Future":
+    """getaddrinfo'yu bir daemon iş parçacığında çalıştırır.
+
+    loop.getaddrinfo varsayılan executor'ı kullanır; asyncio.run çıkarken oradaki iş parçacıklarını
+    bekler. Sistem DNS'i yanıt vermiyorsa (tam da bu testin aradığı durum) servis SIGTERM'den sonra
+    takılı kalır ve systemd onu SIGKILL ile öldürür. Daemon iş parçacığı çıkışı engellemez.
+    """
+    fut = loop.create_future()
+    if not _SYSDNS_SLOTS.acquire(blocking=False):
+        fut.set_exception(OSError("previous system DNS lookups are still hanging"))
+        return fut
+
+    def work() -> None:
+        try:
+            res, err = socket.getaddrinfo(host, 443, socket.AF_UNSPEC, socket.SOCK_STREAM), None
+        except BaseException as e:  # noqa: BLE001
+            res, err = None, e
+        finally:
+            _SYSDNS_SLOTS.release()
+
+        def deliver() -> None:
+            if fut.done():  # zaman aşımında iptal edildi
+                return
+            if err is not None:
+                fut.set_exception(err)
+            else:
+                fut.set_result(res)
+
+        try:
+            loop.call_soon_threadsafe(deliver)
+        except RuntimeError:  # döngü kapanmış
+            pass
+
+    threading.Thread(target=work, name="dpigec-sysdns", daemon=True).start()
+    return fut
 
 
 async def system_dns_ok(domains: List[str], timeout: float = SYSTEM_DNS_TIMEOUT) -> bool:
@@ -47,8 +87,7 @@ async def system_dns_ok(domains: List[str], timeout: float = SYSTEM_DNS_TIMEOUT)
     loop = asyncio.get_running_loop()
     for d in domains[:3]:
         try:
-            infos = await asyncio.wait_for(
-                loop.getaddrinfo(d, 443, family=socket.AF_UNSPEC, type=socket.SOCK_STREAM), timeout)
+            infos = await asyncio.wait_for(_getaddrinfo_daemon(loop, d), timeout)
         except (OSError, asyncio.TimeoutError, UnicodeError):
             continue
         if infos:

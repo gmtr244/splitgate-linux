@@ -6,7 +6,7 @@ import logging
 import socket
 import struct
 import time
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from . import dnswire
 from .doh import DohClient, DohError
@@ -23,7 +23,7 @@ class DnsProxy:
         self.cache_seconds = cache_seconds
         self._cache: Dict[bytes, Tuple[float, bytes]] = {}
         self._servers: List[asyncio.AbstractServer] = []
-        self._transports: List[asyncio.BaseTransport] = []
+        self._transports: List["_UdpEndpoint"] = []
 
     def flush(self) -> None:
         """Ağ değişince: önceki ağa özgü olabilecek cevaplar (CDN adresleri) atılır."""
@@ -70,30 +70,16 @@ class DnsProxy:
         self._cache[key] = (time.monotonic() + min(max(ttl, 10), self.cache_seconds), resp)
 
     # ---- UDP ---------------------------------------------------------------
-    def _udp_protocol(self):
-        proxy = self
-
-        class _Proto(asyncio.DatagramProtocol):
-            def connection_made(self, transport):
-                self.transport = transport
-
-            def datagram_received(self, data, addr):
-                asyncio.ensure_future(self._answer(data, addr))
-
-            async def _answer(self, data, addr):
-                resp = await proxy.handle(data)
-                if resp:
-                    if len(resp) > 4096:  # UDP için çok büyükse TC bitiyle kısalt
-                        try:
-                            resp = dnswire.truncate(resp)
-                        except dnswire.DNSError:
-                            return
-                    try:
-                        self.transport.sendto(resp, addr)
-                    except OSError:
-                        pass
-
-        return _Proto()
+    async def _udp_answer(self, ep: "_UdpEndpoint", data: bytes, addr, pktinfo) -> None:
+        resp = await self.handle(data)
+        if not resp:
+            return
+        if len(resp) > 4096:  # UDP için çok büyükse TC bitiyle kısalt
+            try:
+                resp = dnswire.truncate(resp)
+            except dnswire.DNSError:
+                return
+        ep.send(resp, addr, pktinfo)
 
     # ---- TCP ---------------------------------------------------------------
     async def _tcp_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
@@ -130,8 +116,7 @@ class DnsProxy:
                     udp.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
                 udp.bind((host, port))
                 udp.setblocking(False)
-                transport, _ = await loop.create_datagram_endpoint(self._udp_protocol, sock=udp)
-                self._transports.append(transport)
+                self._transports.append(_UdpEndpoint(self, udp, loop))
             except OSError as e:
                 if fam == socket.AF_INET6:
                     log.warning("could not open the IPv6 DNS listener: %s", e)
@@ -146,3 +131,77 @@ class DnsProxy:
             t.close()
         self._servers.clear()
         self._transports.clear()
+
+
+class _UdpEndpoint:
+    """UDP DNS dinleyicisi: cevabı, sorgunun GELDİĞİ adresten gönderir (IP_PKTINFO / IPV6_PKTINFO).
+
+    nftables REDIRECT ile gelen bir sorguda (ör. resolved -> 1.0.0.1:53 -> 127.0.0.1:15353) cevap
+    conntrack'in beklediği adresten (127.0.0.1) çıkmalı ki 1.0.0.1:53'e geri çevrilsin. Joker (0.0.0.0)
+    bir soketten sendto() kaynağı rotaya göre seçer (ör. 192.168.1.13); conntrack cevabı tanımaz ve
+    istemci (resolved) cevabı yabancı kaynaktan geldiği için reddeder.
+    """
+
+    MAX_BATCH = 64
+    MAX_INFLIGHT = 256  # aynı anda cevaplanan UDP sorgusu; fazlası düşürülür (istemci yeniden dener)
+
+    def __init__(self, proxy: DnsProxy, sock: socket.socket, loop: asyncio.AbstractEventLoop) -> None:
+        self.proxy, self.sock, self.loop = proxy, sock, loop
+        self.v6 = sock.family == socket.AF_INET6
+        if self.v6:
+            sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_RECVPKTINFO, 1)
+        else:
+            sock.setsockopt(socket.IPPROTO_IP, socket.IP_PKTINFO, 1)
+        self._anc = socket.CMSG_SPACE(64)
+        self._closed = False
+        self._tasks: set = set()  # güçlü referans: çöp toplayıcı yarıda kesmesin
+        loop.add_reader(sock.fileno(), self._readable)
+
+    def _pktinfo(self, anc) -> Optional[bytes]:
+        """Gelen paketin hedef adresinden, cevabın kaynağını belirleyen pktinfo verisi."""
+        for level, typ, data in anc:
+            if not self.v6 and level == socket.IPPROTO_IP and typ == socket.IP_PKTINFO and len(data) >= 12:
+                # struct in_pktinfo { int ifindex; in_addr spec_dst; in_addr addr; } -> spec_dst = gelen hedef
+                return struct.pack("=i4s4s", 0, data[8:12], b"\0" * 4)
+            if self.v6 and level == socket.IPPROTO_IPV6 and typ == socket.IPV6_PKTINFO and len(data) >= 20:
+                # struct in6_pktinfo { in6_addr addr; unsigned ifindex; } (bağlantı yerel adres için ifindex kalır)
+                return bytes(data[:20])
+        return None
+
+    def _readable(self) -> None:
+        for _ in range(self.MAX_BATCH):
+            try:
+                data, anc, _flags, addr = self.sock.recvmsg(4096, self._anc)
+            except (BlockingIOError, InterruptedError):
+                return
+            except OSError:
+                return
+            if not data:
+                continue
+            if len(self._tasks) >= self.MAX_INFLIGHT:
+                self.proxy.stats.dns_failed += 1
+                continue  # sel: DoH'a sınırsız iş yığılmasın
+            task = asyncio.ensure_future(self.proxy._udp_answer(self, data, addr, self._pktinfo(anc)))
+            self._tasks.add(task)
+            task.add_done_callback(self._tasks.discard)
+
+    def send(self, resp: bytes, addr, pktinfo: Optional[bytes]) -> None:
+        if self._closed:
+            return
+        level, typ = ((socket.IPPROTO_IPV6, socket.IPV6_PKTINFO) if self.v6
+                      else (socket.IPPROTO_IP, socket.IP_PKTINFO))
+        anc = [(level, typ, pktinfo)] if pktinfo else []
+        try:
+            self.sock.sendmsg([resp], anc, 0, addr)
+        except OSError:
+            pass  # UDP: kayıp cevap istemcide yeniden denenir
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            self.loop.remove_reader(self.sock.fileno())
+        except (ValueError, OSError):
+            pass
+        self.sock.close()
