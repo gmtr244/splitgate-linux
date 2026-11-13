@@ -15,7 +15,7 @@ import subprocess
 import sys
 from typing import Any, Dict
 
-from . import firewall
+from . import firewall, sysdns
 from .i18n import _, set_language
 from .config import SYSTEM_CONFIG, ConfigError, load_config, normalize, save_config
 
@@ -92,6 +92,10 @@ def main(argv=None) -> int:
             return _out(False, msg=(res.stderr or res.stdout).strip() or _("systemctl {action} failed", action="kill"))
         return _out(True, msg=_("check started"))
     if cmd == "cleanup":
+        try:
+            sysdns.disable()  # önce DoT geri gelsin, sonra yönlendirme kalksın
+        except Exception:  # noqa: BLE001  (kurallar her durumda kaldırılmalı)
+            pass
         removed = firewall.remove()
         return _out(True, msg=_("rules removed") if removed else _("no rules to remove"))
     return _out(False, msg=_("unknown command: {cmd}", cmd=cmd))

@@ -11,7 +11,7 @@ import shutil
 import subprocess
 import sys
 
-from . import __version__, firewall
+from . import __version__, firewall, sysdns
 from .i18n import (LANGUAGES, _, init as init_language, language, normalize_language,
                    save_language, set_language)
 from .config import (ConfigError, STATUS_FILE, SYSTEM_CONFIG, default_config,
@@ -124,7 +124,9 @@ def cmd_report(args) -> int:
 
 def cmd_daemon(args) -> int:
     cfg = load_config(args.config or SYSTEM_CONFIG)
-    return run_engine(cfg, console=True)
+    # --service yalnızca systemd unit'inden verilir: o zaman kuralları ExecStopPost kaldırır.
+    # Elle çalıştırılan daemon kendi kurallarını çıkışta kendisi kaldırır.
+    return run_engine(cfg, console=True, service=args.service)
 
 
 def cmd_run(args) -> int:
@@ -175,9 +177,25 @@ def cmd_config(args) -> int:
 
 def cmd_cleanup(_args) -> int:
     if os.geteuid() == 0:  # servis ExecStopPost'u burada root olarak çalışır
+        # Önce resolved'un DoT ayarı geri gelsin, sonra yönlendirme kalksın (düz DNS sızmasın).
+        # disable() istisna fırlatmaz; yine de kuralların kaldırılması hiçbir koşulda atlanmamalı.
+        try:
+            sysdns.disable()
+        except Exception as e:  # noqa: BLE001
+            print(f"warning: {e}", file=sys.stderr)
         print(_("rules removed") if firewall.remove() else _("no rules to remove"))
         return 0
     return _privileged(["cleanup"])
+
+
+def cmd_sysdns(args) -> int:
+    """(servis) systemd-resolved DoT uyumu; yalnızca root, unit dosyasındaki ExecStartPost/ExecStop kullanır."""
+    if os.geteuid() != 0:
+        print(_("this command must run as root (it is used by the service)"), file=sys.stderr)
+        return 1
+    if args.action == "on":
+        return sysdns.main_on(load_config(SYSTEM_CONFIG))
+    return sysdns.main_off()
 
 
 def cmd_lang(args) -> int:
@@ -226,6 +244,7 @@ def main(argv=None) -> int:
     p.set_defaults(fn=cmd_report)
     p = sub.add_parser("daemon", help=_("(service) run the engine in the foreground"))
     p.add_argument("--config")
+    p.add_argument("--service", action="store_true", help=argparse.SUPPRESS)
     p.set_defaults(fn=cmd_daemon)
     p = sub.add_parser("run", help=_("run in the foreground (SOCKS5 mode when not root)"))
     p.add_argument("--config")
@@ -241,6 +260,9 @@ def main(argv=None) -> int:
     p.set_defaults(fn=cmd_config)
     p = sub.add_parser("cleanup", help=_("remove the nftables rules"))
     p.set_defaults(fn=cmd_cleanup)
+    p = sub.add_parser("sysdns", help=_("(service) pause/restore systemd-resolved DNS-over-TLS"))
+    p.add_argument("action", choices=("on", "off"))
+    p.set_defaults(fn=cmd_sysdns)
     p = sub.add_parser("lang", help=_("show or set the interface language"))
     p.add_argument("code", nargs="?")
     p.set_defaults(fn=cmd_lang)

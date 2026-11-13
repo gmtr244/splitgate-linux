@@ -44,6 +44,176 @@ def make_engine(fake):
     return e
 
 
+class DaemonFlagTests(unittest.TestCase):
+    def test_service_mode_only_with_explicit_flag(self):
+        from dpigec import cli
+        seen = []
+        with mock.patch.object(cli, "run_engine", lambda cfg, **kw: seen.append(kw["service"]) or 0), \
+                mock.patch.object(cli, "load_config", lambda p: config.default_config()):
+            cli.main(["daemon"])
+            cli.main(["daemon", "--service"])
+        self.assertEqual(seen, [False, True])
+
+
+class ServiceFirewallTests(unittest.IsolatedAsyncioTestCase):
+    def mk(self, service):
+        e = make_engine(FakeChecker({}))
+        e.dns = None  # stop() sahte sunucuları await etmesin
+        e.manage_firewall = True
+        e.service = service
+        e._fw_active = True
+        return e
+
+    async def test_service_leaves_rule_removal_to_execstoppost(self):
+        e = self.mk(True)
+        with mock.patch.object(engine.firewall, "remove") as rm:
+            await e.stop()
+        rm.assert_not_called()
+
+    async def test_foreground_run_removes_rules_itself(self):
+        e = self.mk(False)
+        with mock.patch.object(engine.firewall, "remove") as rm:
+            await e.stop()
+        rm.assert_called_once()
+
+    async def test_flushed_rules_are_reapplied(self):
+        e = self.mk(True)
+        with mock.patch.object(engine.firewall, "is_intact", return_value=False), \
+                mock.patch.object(engine.firewall, "apply") as ap:
+            await e._guard_firewall()
+        ap.assert_called_once_with(e.cfg)
+        with mock.patch.object(engine.firewall, "is_intact", return_value=True), \
+                mock.patch.object(engine.firewall, "apply") as ap:
+            await e._guard_firewall()
+        ap.assert_not_called()
+
+    async def test_guard_does_not_reapply_once_stopping(self):
+        e = self.mk(False)
+
+        def installed(cfg):
+            e.state = "stopping"  # stop() iş parçacığı beklerken başladı
+            return False
+
+        with mock.patch.object(engine.firewall, "is_intact", side_effect=installed), \
+                mock.patch.object(engine.firewall, "apply") as ap:
+            await e._guard_firewall()
+        ap.assert_not_called()
+
+    async def test_watch_reacts_only_to_events_on_our_table(self):
+        e = self.mk(True)
+        lines = [b"add table inet dpigec\n", b"delete table inet other\n", b"add rule ip nat x\n",
+                 b"delete table inet dpigec\n", b""]
+
+        class Out:
+            async def readline(self_inner):
+                return lines.pop(0) if lines else b""
+
+        class Proc:
+            stdout = Out()
+            stderr = None
+            returncode = None
+
+            def kill(self_inner):
+                self_inner.returncode = -9
+
+            async def wait(self_inner):
+                return -9
+
+        spawns = []
+
+        async def spawn(*a, **kw):
+            spawns.append(a)
+            if len(spawns) == 2:  # monitor kapandıktan sonra yeniden başlatıldı: testi bitir
+                e._stop.set()
+            return Proc()
+
+        guards = []
+
+        async def guard():
+            guards.append(1)
+
+        e._guard_firewall = guard
+        with mock.patch.object(engine.asyncio, "create_subprocess_exec", spawn), \
+                mock.patch.object(engine.firewall, "_nft", return_value="/usr/bin/nft"):
+            await asyncio.wait_for(e._fw_watch(), 5)
+        # 1. monitor: başlangıç kontrolü + yalnızca "delete table inet dpigec" olayı (diğer satırlar yok sayılır);
+        # monitor kapanınca yeniden başlatılır (2. spawn, "monitor" argümanıyla) ve yine başlangıç kontrolü yapılır.
+        self.assertEqual(len(guards), 3)
+        self.assertEqual(spawns[0], ("/usr/bin/nft", "monitor"))
+
+    async def test_watch_falls_back_to_polling_without_nft_monitor(self):
+        e = self.mk(True)
+        guards = []
+
+        async def guard():
+            guards.append(1)
+            if len(guards) >= 2:
+                e._stop.set()
+
+        async def spawn(*a, **kw):
+            raise FileNotFoundError("nft")
+
+        e._guard_firewall = guard
+        with mock.patch.object(engine.asyncio, "create_subprocess_exec", spawn), \
+                mock.patch.object(engine.firewall, "_nft", return_value="/usr/bin/nft"):
+            await asyncio.wait_for(e._fw_watch(fallback_seconds=0.01), 5)
+        self.assertEqual(len(guards), 2)
+
+    async def test_reapply_is_rate_limited(self):
+        e = self.mk(True)
+        with mock.patch.object(engine.firewall, "is_intact", return_value=False), \
+                mock.patch.object(engine.firewall, "apply") as ap:
+            for _ in range(engine.REAPPLY_MAX + 10):
+                await e._guard_firewall()
+        self.assertEqual(ap.call_count, engine.REAPPLY_MAX)
+        self.assertGreater(e._guard_paused_until, 0)
+
+    async def test_monitor_that_exits_at_once_falls_back_to_polling(self):
+        e = self.mk(True)
+        spawns, guards = [], []
+
+        class Proc:
+            returncode = None
+
+            def __init__(self_inner):
+                async def eof():
+                    return b""
+
+                async def err(n):
+                    return b"Operation not permitted"
+                self_inner.stdout = type("O", (), {"readline": staticmethod(eof)})()
+                self_inner.stderr = type("E", (), {"read": staticmethod(err)})()
+
+            def kill(self_inner):
+                self_inner.returncode = -9
+
+            async def wait(self_inner):
+                return -9
+
+        async def spawn(*a, **kw):
+            spawns.append(1)
+            return Proc()
+
+        async def guard():
+            guards.append(1)
+            if len(guards) > engine.MONITOR_MAX_FAST_EXITS + 1:
+                e._stop.set()
+
+        e._guard_firewall = guard
+        with mock.patch.object(engine.asyncio, "create_subprocess_exec", spawn), \
+                mock.patch.object(engine.firewall, "_nft", return_value="/usr/bin/nft"), \
+                mock.patch.object(engine.asyncio, "sleep", side_effect=lambda t: asyncio.sleep(0)):
+            await asyncio.wait_for(e._fw_watch(fallback_seconds=0.01), 10)
+        self.assertEqual(len(spawns), engine.MONITOR_MAX_FAST_EXITS)  # sonra yeniden başlatılmaz
+
+    async def test_guard_idle_when_not_managing_firewall(self):
+        e = self.mk(True)
+        e.manage_firewall = False
+        with mock.patch.object(engine.firewall, "is_intact") as inst:
+            await e._guard_firewall()
+        inst.assert_not_called()
+
+
 WORK = {"check": checker.WORKING, "detail": "2/2", "verdict": "works", "results": []}
 FAIL = {"check": checker.FAILED, "detail": "", "verdict": "dpi_unbeaten", "results": []}
 

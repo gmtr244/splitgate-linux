@@ -33,7 +33,9 @@ class PackagingTests(unittest.TestCase):
 
     def test_service_unit(self):
         unit = read("data", "dpigec.service")
-        for needle in ("ExecStart=@PREFIX@/bin/dpigec daemon", "ExecStopPost=-@PREFIX@/bin/dpigec cleanup",
+        for needle in ("ExecStart=@PREFIX@/bin/dpigec daemon --service", "ExecStopPost=-+@PREFIX@/bin/dpigec cleanup",
+                       "ExecStartPost=-+@PREFIX@/bin/dpigec sysdns on",
+                       "ExecStop=-+@PREFIX@/bin/dpigec sysdns off",
                        "CapabilityBoundingSet=CAP_NET_ADMIN", "WantedBy=multi-user.target"):
             self.assertIn(needle, unit)
 

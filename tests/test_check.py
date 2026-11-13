@@ -1,4 +1,5 @@
 """Ağ izleyici ve gerçek kontrol (sahte probe ile; ağa çıkmaz)."""
+import asyncio
 import os
 import sys
 import tempfile
@@ -93,9 +94,15 @@ class CheckerTests(unittest.IsolatedAsyncioTestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def mk(self, table):
+    def mk(self, table, sys_dns=True):
         fake = FakeNet(table)
-        return checker.Checker(self.cfg, fake, self.path), fake
+        self.sys_dns_calls = []
+
+        async def fake_sys_dns(domains):
+            self.sys_dns_calls.append(list(domains))
+            return sys_dns
+
+        return checker.Checker(self.cfg, fake, self.path, sys_dns=fake_sys_dns), fake
 
     async def test_working_only_if_method_bypasses(self):
         c, fake = self.mk({"none": (R, R), "sni": (None, R)})
@@ -168,6 +175,57 @@ class CheckerTests(unittest.IsolatedAsyncioTestCase):
         c2, _ = self.mk({"none": (R, R), "custom": (None, R)})
         r2 = await c2.verify(self.net, "custom", self.applied.append)
         self.assertEqual(r2["check"], checker.WORKING)
+
+    async def test_dead_system_dns_is_never_reported_as_working(self):
+        # GamerZone durumu: yöntem DoH ile siteleri açıyor ama sistem çözücüsü (katı DoT) ölü.
+        c, fake = self.mk({"none": (R, R), "sni": (None, None)}, sys_dns=False)
+        r = await c.verify(self.net, "sni", self.applied.append)
+        self.assertEqual(r["check"], checker.FAILED)
+        self.assertEqual(r["verdict"], probe.SYSTEM_DNS)
+        self.assertEqual(len(fake.calls), 1)  # başka yöntem denemek anlamsız: tam test koşmaz
+        self.assertEqual(self.sys_dns_calls[0],
+                         [self.cfg["probe_domains"][0], "example.com", "cloudflare.com"])
+
+    async def test_dead_system_dns_also_overrides_not_blocked(self):
+        c, _ = self.mk({"none": (None, None), "sni": (None, None)}, sys_dns=False)
+        r = await c.verify(self.net, "sni", self.applied.append)
+        self.assertEqual((r["check"], r["verdict"]), (checker.FAILED, probe.SYSTEM_DNS))
+
+    async def test_system_dns_not_checked_in_socks_mode_or_on_failure(self):
+        self.cfg["mode"] = "socks"
+        c, _ = self.mk({"none": (R, R), "sni": (None, None)}, sys_dns=False)
+        r = await c.verify(self.net, "sni", self.applied.append)
+        self.assertEqual(r["check"], checker.WORKING)
+        self.assertEqual(self.sys_dns_calls, [])
+        self.cfg["mode"] = "transparent"
+        self.cfg["auto_method"] = False
+        c2, _ = self.mk({"none": (R, R), "sni": (R, R)}, sys_dns=False)
+        r2 = await c2.verify(self.net, "sni", self.applied.append)
+        self.assertEqual(r2["verdict"], probe.DPI_UNBEATEN)  # asıl neden gizlenmez
+        self.assertEqual(self.sys_dns_calls, [])
+
+    async def test_system_dns_ok_tries_up_to_three_names_and_survives_errors(self):
+        import socket
+        from unittest import mock
+        loop = asyncio.get_running_loop()
+        tried = []
+
+        async def gai(host, port, family=0, type=0):
+            tried.append((host, family))
+            if host == "c.example":
+                return [(socket.AF_INET6, type, 6, "", ("2001:db8::1", 443, 0, 0))]
+            if host == "slow.example":
+                await asyncio.sleep(10)
+            raise socket.gaierror(-2, "Name or service not known")
+
+        with mock.patch.object(loop, "getaddrinfo", gai):
+            self.assertTrue(await checker.system_dns_ok(["a.example", "slow.example", "c.example"], timeout=0.05))
+            self.assertEqual([h for h, _ in tried], ["a.example", "slow.example", "c.example"])
+            self.assertTrue(all(f == socket.AF_UNSPEC for _, f in tried))  # IPv6-only ağlar da sayılır
+            tried.clear()
+            self.assertFalse(await checker.system_dns_ok(["a.example", "b.example", "d.example", "c.example"],
+                                                         timeout=0.05))
+            self.assertEqual(len(tried), 3)
 
     def test_networks_keyed_by_gateway_mac(self):
         a = netwatch.NetId("wifi:wlan0:192.168.1.1", "Wi-Fi", "aa:aa:aa:aa:aa:aa")

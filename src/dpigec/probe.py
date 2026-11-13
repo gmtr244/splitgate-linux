@@ -43,6 +43,7 @@ NO_CONNECTION = "no_connection"  # ağ / yol yok
 IP_BLOCK = "ip_block"            # TCP bile kurulmuyor; bölme aşamaz
 INTERCEPTED = "intercepted"      # yanlış sertifika: araya giren var
 DPI_UNBEATEN = "dpi_unbeaten"    # bağlantı kuruluyor ama DPI her yöntemi yakalıyor
+SYSTEM_DNS = "system_dns"        # yöntem çalışıyor ama sistem çözücüsü (uygulamaların DNS'i) ad çözemiyor
 
 
 class _ConnectTimeout(Exception):
@@ -250,6 +251,10 @@ def verdict_text(v: str) -> str:
                     "Splitting cannot get around it; only a real VPN or proxy can."),
         INTERCEPTED: _("The sites answer with a wrong certificate: something on this network (operator, modem "
                        "or school/company filter) intercepts the connection. Splitting cannot get around it."),
+        SYSTEM_DNS: _("The method works, but this computer's own DNS (systemd-resolved) cannot resolve any "
+                      "name, so apps cannot connect. Usually DNS-over-TLS is required while this network's DNS "
+                      "server does not support it. Restart the service; if it persists, see Troubleshooting in "
+                      "the README."),
     }.get(v, _("The connection is made but the filter catches every method on this network. "
                "Send a report so it can be looked at."))
 

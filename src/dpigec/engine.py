@@ -9,6 +9,7 @@ import logging.handlers
 import os
 import signal
 import sys
+import time
 from typing import Any, Dict, Optional
 
 from . import __version__, firewall, netwatch
@@ -23,6 +24,13 @@ from .status import remove_status, write_status
 from .transparent import TransparentServer
 
 log = logging.getLogger("dpigec")
+
+# Kural koruyucusu sınırları (pil/olay döngüsü güvenliği)
+REAPPLY_MAX = 5           # REAPPLY_WINDOW içinde en çok bu kadar yeniden kurma
+REAPPLY_WINDOW = 60.0
+REAPPLY_BACKOFF = 60
+MONITOR_FAST_EXIT = 5.0   # bundan kısa yaşayan monitor "hemen kapandı" sayılır
+MONITOR_MAX_FAST_EXITS = 3
 
 
 def setup_logging(level: str, logfile: Optional[str] = LOG_FILE, console: bool = True) -> None:
@@ -51,8 +59,12 @@ def setup_logging(level: str, logfile: Optional[str] = LOG_FILE, console: bool =
 
 class Engine:
     def __init__(self, cfg: Dict[str, Any], status_path: str = STATUS_FILE,
-                 manage_firewall: Optional[bool] = None) -> None:
+                 manage_firewall: Optional[bool] = None, service: bool = False) -> None:
         self.cfg = cfg
+        # service=True (systemd unit): çıkışta kuralları motor KALDIRMAZ; unit'in ExecStopPost=+ cleanup'ı
+        # önce resolved'un DoT'unu geri açar, sonra kuralları kaldırır. Böylece hiçbir çıkış yolunda
+        # "DoT kapalı + yönlendirme yok" (düz DNS sızıntısı) anı oluşmaz; arada DNS yalnızca başarısız olur.
+        self.service = service
         self.status_path = status_path
         self.mode = cfg["mode"]
         self.manage_firewall = (self.mode == "transparent") if manage_firewall is None else manage_firewall
@@ -76,6 +88,8 @@ class Engine:
         self._check_task: Optional[asyncio.Task] = None
         self._check_gen = 0
         self._had_network = False
+        self._reapplies: list = []          # son yeniden kurma zamanları (oran sınırı)
+        self._guard_paused_until = 0.0
 
     # ---- yaşam döngüsü -----------------------------------------------------
     async def start(self) -> None:
@@ -117,7 +131,10 @@ class Engine:
         self.state = "stopping"
         self._publish()
         if self._fw_active:
-            firewall.remove()
+            if self.service:
+                log.info("leaving the nftables rules to the service cleanup (ExecStopPost)")
+            else:
+                firewall.remove()
             self._fw_active = False
         for srv in (self.transparent, self.proxy, self.dns):
             if srv is not None:
@@ -251,6 +268,128 @@ class Engine:
             "stats": self.stats.as_dict(),
         }, self.status_path)
 
+    async def _guard_firewall(self) -> None:
+        """Kurallar dışarıdan silindiyse/bozulduysa (ör. `systemctl restart nftables` -> flush ruleset) geri kur.
+
+        Servis çalışırken resolved'un DoT'u duraklatılmış olabilir; kurallar yoksa düz DNS dışarı çıkar.
+        """
+        if not (self._fw_active and self.manage_firewall) or self.state != "running":
+            return
+        loop = asyncio.get_running_loop()
+        if await loop.run_in_executor(None, firewall.is_intact, self.cfg):
+            return
+        # is_intact iş parçacığında beklerken stop() başlamış olabilir: kapanırken kural geri kurulmamalı.
+        if not (self._fw_active and self.state == "running" and not self._stop.is_set()):
+            return
+        now = time.monotonic()
+        if now < self._guard_paused_until:
+            return
+        # Oran sınırı: kurduktan sonra bile "bozuk" görünüyorsa (ör. farklı nft çıktı biçimi) sonsuz
+        # apply -> delete olayı -> apply döngüsü pil ve olay döngüsü tüketmesin.
+        self._reapplies = [t for t in self._reapplies if now - t < REAPPLY_WINDOW]
+        if len(self._reapplies) >= REAPPLY_MAX:
+            self._guard_paused_until = now + REAPPLY_BACKOFF
+            log.error("nftables rules keep disappearing or do not match; pausing the rule guard for %d s",
+                      REAPPLY_BACKOFF)
+            self.stats.error("nftables rules keep disappearing")
+            return
+        self._reapplies.append(now)
+        log.warning("nftables rules disappeared (ruleset flushed?), re-applying")
+        try:
+            # Eşzamanlı (olay döngüsünde): iş parçacığı iptal edilemez; stop() ile yarışıp kapanıştan
+            # sonra kuralları geri kurmasın. nft -f kısa sürer ve bu yol yalnızca dış bir flush'ta çalışır.
+            firewall.apply(self.cfg)
+        except firewall.FirewallError as e:
+            log.error("could not re-apply nftables rules: %s", e)
+            self.stats.error(str(e))
+
+    async def _guard_safe(self) -> None:
+        try:
+            await self._guard_firewall()
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001
+            log.exception("firewall guard error")
+
+    async def _fw_watch(self, safety_seconds: float = 60.0, fallback_seconds: float = 5.0) -> None:
+        """Kural koruyucusu, olay tabanlı: `nft monitor` çekirdekten silme/flush olaylarını bildirir.
+
+        Her saniye nft çalıştırmak (yoklama) pil tüketir; bunun yerine yalnızca bizim tablomuzu etkileyen
+        bir "delete"/"flush" olayında kontrol edilir. Ayrıca seyrek bir güvenlik kontrolü yapılır;
+        monitor açılamazsa yoklamaya (fallback_seconds) düşülür.
+        """
+        if not (self.manage_firewall and self._fw_active):
+            return
+        fast_exits = 0
+        while not self._stop.is_set():
+            proc = None
+            started = time.monotonic()
+            if fast_exits < MONITOR_MAX_FAST_EXITS:
+                try:
+                    proc = await asyncio.create_subprocess_exec(
+                        firewall._nft(), "monitor", stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE, stdin=asyncio.subprocess.DEVNULL)
+                except (OSError, firewall.FirewallError) as e:
+                    log.warning("nft monitor unavailable (%s); checking the rules every %d s instead",
+                                e, fallback_seconds)
+                    fast_exits = MONITOR_MAX_FAST_EXITS
+            try:
+                if proc is not None:
+                    # monitor'ün netlink aboneliği oturana kadar kısa bekle; sonra arada kaçmış olayları kapsayan
+                    # ilk kontrol (abonelikten sonra gelen her olayı monitor zaten bildirir).
+                    await asyncio.sleep(0.2)
+                await self._guard_safe()
+                if proc is None or proc.stdout is None:
+                    await asyncio.wait_for(self._stop.wait(), fallback_seconds)
+                    continue
+                while not self._stop.is_set():
+                    try:
+                        line = await asyncio.wait_for(proc.stdout.readline(), safety_seconds)
+                    except asyncio.TimeoutError:
+                        await self._guard_safe()
+                        continue
+                    if not line:
+                        # monitor kapandı. Hemen kapanıyorsa (yetki/çekirdek sorunu) saniyede bir yeniden
+                        # başlatmak pil tüketir: birkaç denemeden sonra seyrek yoklamaya geç.
+                        err = b""
+                        if proc.stderr is not None:
+                            try:
+                                err = await asyncio.wait_for(proc.stderr.read(400), 1)
+                            except (asyncio.TimeoutError, OSError):
+                                pass
+                        if time.monotonic() - started < MONITOR_FAST_EXIT:
+                            fast_exits += 1
+                        else:
+                            fast_exits = 0
+                        log.warning("nft monitor exited%s%s", ": " if err else "",
+                                    err.decode("utf-8", "replace").strip()[:200])
+                        if fast_exits >= MONITOR_MAX_FAST_EXITS:
+                            log.warning("nft monitor keeps exiting; checking the rules every %d s instead",
+                                        fallback_seconds)
+                        break
+                    words = line.decode("utf-8", "replace").split()
+                    if words and words[0] in ("delete", "flush") and firewall.TABLE in words:
+                        # Kendi apply'ımız da delete+add üretir (tek işlem); kısa bekleyip içeriği denetle.
+                        await asyncio.sleep(0.05)
+                        await self._guard_safe()
+            except asyncio.TimeoutError:
+                continue
+            finally:
+                if proc is not None and proc.returncode is None:
+                    try:
+                        proc.kill()
+                    except ProcessLookupError:
+                        pass
+                    try:
+                        await asyncio.wait_for(proc.wait(), 2)
+                    except (asyncio.TimeoutError, asyncio.CancelledError):
+                        pass
+            if not self._stop.is_set():
+                try:
+                    await asyncio.wait_for(self._stop.wait(), 1.0)
+                except asyncio.TimeoutError:
+                    pass
+
     async def _status_loop(self) -> None:
         while not self._stop.is_set():
             self._publish()
@@ -273,23 +412,30 @@ class Engine:
             return 1
         status_task = asyncio.ensure_future(self._status_loop())
         net_task = asyncio.ensure_future(self._net_loop())
+        fw_task = asyncio.ensure_future(self._fw_watch())
         try:
             await self._stop.wait()
         finally:
             net_task.cancel()
+            status_task.cancel()
+            fw_task.cancel()  # kural koruyucusu stop() ile yarışmasın (apply eşzamanlı, iş parçacığı yok)
             if self._check_task is not None:
                 self._check_task.cancel()
+            for t in (status_task, fw_task):
+                try:
+                    await t
+                except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                    pass
             await self.stop()
-            status_task.cancel()
         return 0
 
 
 def run_engine(cfg: Dict[str, Any], console: bool = True, logfile: Optional[str] = LOG_FILE,
-               status_path: str = STATUS_FILE) -> int:
+               status_path: str = STATUS_FILE, service: bool = False) -> int:
     setup_logging(cfg["log_level"], logfile, console)
     if cfg["log_domains"] and cfg["log_level"] == "debug":
         log.warning("log_domains is on: visited domain names will be written to the log")
     if status_path == STATUS_FILE:
         os.makedirs(RUN_DIR, exist_ok=True)
-    engine = Engine(cfg, status_path=status_path)
+    engine = Engine(cfg, status_path=status_path, service=service)
     return asyncio.run(engine.run())

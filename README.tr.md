@@ -135,6 +135,13 @@ Dosya: `/etc/dpigec/config.json` (arayüz *Ayarlar* sekmesi bunu yönetir). Öne
   sağlayıcı ekleyin.
 - **Firefox kendi DoH'unu kullanıyor:** Sorun değil; bölme yine uygulanır. DNS zehirlenmesi
   sorunu yaşıyorsanız Firefox'un DoH ayarını kapatıp sistem DNS'ine bırakın.
+- **"Çalışıyor" diyor ama hiçbir şey açılmıyor, DNS sayacı 0'da kalıyor:** sistem çözücüsü DNS-over-TLS
+  kullanıyor (systemd-resolved `DNSOverTLS=yes`) ve bu ağın DNS sunucusu (genelde router) bunu desteklemiyor;
+  hiçbir ad çözülemiyor. 1.1.7'den beri servis çalışırken resolved'un DoT'unu duraklatır
+  (`/run/systemd/resolved.conf.d/zz-dpigec.conf`, durunca silinir); 53. port yerel vekile yönlendirildiği için
+  DNS yine şifreli olarak DoH ile çıkar. Kontrol sistem çözücüsünü de dener; ölü ise *ÇALIŞIYOR* yerine
+  *ÇALIŞMIYOR* gösterir. SplitGate'ten bağımsız olarak böyle bir ağda router'ın DNS'ini yok saydırabilirsiniz:
+  `nmcli con mod "<ağ adı>" ipv4.ignore-auto-dns yes ipv6.ignore-auto-dns yes`.
 - **Günlük:** arayüzde *Günlük* sekmesi veya `journalctl -u dpigec`.
   Ziyaret edilen alan adları varsayılan olarak günlüğe **yazılmaz**.
 - **Polkit:** `pkexec` her seferinde şifre soruyorsa eylem eşleşmemiş olabilir; çalışmaya devam eder,
@@ -143,6 +150,13 @@ Dosya: `/etc/dpigec/config.json` (arayüz *Ayarlar* sekmesi bunu yönetir). Öne
 ## Güvenlik
 
 - Servis `CAP_NET_ADMIN` dışındaki tüm yetkileri bırakır, `ProtectSystem=strict`, `NoNewPrivileges` vb.
+- Sandbox dışında tam root olarak yalnızca unit'in `ExecStartPost=+`/`ExecStop=+`/`ExecStopPost=+` adımları
+  çalışır (`dpigec sysdns on|off`, `dpigec cleanup`): `/run/systemd/resolved.conf.d` altında sabit içerikli tek
+  bir sabit dosya yazar/siler, `systemctl`/`resolvectl`/`nft` çalıştırır, kullanıcı girdisi almaz. DoT yalnızca
+  DNS yönlendirmesi çalışan kurallarda görüldükten sonra duraklatılır ve kurallar kaldırılmadan önce geri açılır
+  (servis modunda kuralları motor değil `ExecStopPost` kaldırır); çalışırken kurallar ya da tek bir kural başka
+  bir şey tarafından silinirse çekirdek motoru haberdar eder (`nft monitor`, yoklama yok) ve motor kuralları
+  yaklaşık 100 ms içinde yeniden kurar.
 - Yetkili işlemlerin tamamı tek bir yardımcıdan (`dpigecctl`) geçer; yapılandırma STDIN'den
   alınır ve her alan sıkı doğrulanır, nftables metnine yalnızca doğrulanmış sayılar girer. Yardımcının ayrıcalıksız taraftan kabul ettiği tek ek argüman arayüz dil kodudur; sabit bir izin listesine karşı denetlenir.
 - Vekil, yalnızca `SO_ORIGINAL_DST` bulunabilen (yönlendirilmiş) bağlantıları kabul eder.

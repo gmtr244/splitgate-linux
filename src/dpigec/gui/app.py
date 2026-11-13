@@ -1185,7 +1185,9 @@ class MainWindow(QMainWindow):
                 look = (RED, "idle")
             else:
                 look = (AMBER, "idle")
-            self.hint_btn.setVisible(running and st.get("check") == "failed")
+            # Sistem DNS sorununda başka yöntem denemek işe yaramaz: "yöntem bul" önerilmez.
+            self.hint_btn.setVisible(running and st.get("check") == "failed"
+                                     and st.get("verdict") != "system_dns")
         else:
             for c in self.cards.values():
                 c.set("–")

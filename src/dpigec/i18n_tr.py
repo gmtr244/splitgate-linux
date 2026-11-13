@@ -246,4 +246,7 @@ CATALOG = {
     'Content is never decrypted; your traffic does not pass through any third-party server.': 'İçerik şifresi çözülmez; trafiğiniz hiçbir üçüncü taraf sunucudan geçmez.',
     'This tool is only meant to get around access blocks; it is not a VPN and does not hide your IP address. You are responsible for how you use it.': 'Bu araç yalnızca erişim engellerini aşmak içindir; bir VPN değildir ve IP adresinizi gizlemez. Kullanım sorumluluğu size aittir.',
     '© 2026 Project Gamers — License: GPL-3.0-or-later': '© 2026 Project Gamers — Lisans: GPL-3.0-or-later',
+    "The method works, but this computer's own DNS (systemd-resolved) cannot resolve any name, so apps cannot connect. Usually DNS-over-TLS is required while this network's DNS server does not support it. Restart the service; if it persists, see Troubleshooting in the README.": "Yöntem çalışıyor ama bu bilgisayarın kendi DNS'i (systemd-resolved) hiçbir adı çözemiyor, bu yüzden uygulamalar bağlanamıyor. Genelde nedeni şudur: DNS-over-TLS zorunlu tutulmuş ama bu ağın DNS sunucusu onu desteklemiyor. Servisi yeniden başlat; sürerse README'deki Sorun giderme bölümüne bak.",
+    'this command must run as root (it is used by the service)': 'bu komut root olarak çalışmalı (servis tarafından kullanılır)',
+    '(service) pause/restore systemd-resolved DNS-over-TLS': "(servis) systemd-resolved DNS-over-TLS'ini duraklat/geri yükle",
 }

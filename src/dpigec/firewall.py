@@ -109,6 +109,22 @@ def remove() -> bool:
     return False
 
 
+def is_intact(cfg: Dict[str, Any]) -> bool:
+    """Tablo var ve (DNS açıksa) 53 yönlendirmesi çalışan kurallarda mı? Sızıntı açısından kritik olan budur."""
+    try:
+        res = subprocess.run([_nft(), "list", "table", "inet", TABLE],
+                             capture_output=True, text=True, timeout=10)
+    except (FirewallError, OSError, subprocess.SubprocessError):
+        return False
+    if res.returncode != 0:
+        return False
+    if not cfg["dns"]["enabled"]:
+        return True
+    port = int(cfg["dns_port"])
+    lines = {ln.strip() for ln in res.stdout.splitlines()}
+    return {f"udp dport 53 redirect to :{port}", f"tcp dport 53 redirect to :{port}"} <= lines
+
+
 def is_installed() -> bool:
     try:
         res = subprocess.run([_nft(), "list", "table", "inet", TABLE],

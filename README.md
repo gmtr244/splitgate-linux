@@ -135,6 +135,13 @@ File: `/etc/dpigec/config.json` (the *Settings* tab of the GUI manages it). High
   custom provider.
 - **Firefox uses its own DoH:** No problem; splitting is still applied. If you have DNS poisoning issues,
   turn off Firefox's DoH setting and let it use the system DNS.
+- **"Running" but nothing opens, the DNS counter stays at 0:** the system resolver uses DNS-over-TLS
+  (systemd-resolved `DNSOverTLS=yes`) and this network's DNS server (usually the router) does not speak it,
+  so no name resolves. Since 1.1.7 the service pauses resolved's DoT while it runs (a drop-in in
+  `/run/systemd/resolved.conf.d/zz-dpigec.conf`, removed on stop); port 53 is redirected to the local
+  proxy, so DNS still leaves the machine encrypted as DoH. The check also tests the system resolver and
+  shows *NOT WORKING* instead of *WORKING* if it is dead. Independent of SplitGate you can make such a
+  network ignore the router's DNS: `nmcli con mod "<network>" ipv4.ignore-auto-dns yes ipv6.ignore-auto-dns yes`.
 - **Log:** the *Log* tab in the GUI or `journalctl -u dpigec`. Visited domain names are **not** written to
   the log by default.
 - **Polkit:** if `pkexec` asks for the password every time, the action may not have matched; it keeps
@@ -143,7 +150,13 @@ File: `/etc/dpigec/config.json` (the *Settings* tab of the GUI manages it). High
 ## Security
 
 - The service drops all privileges except `CAP_NET_ADMIN`, and uses `ProtectSystem=strict`,
-  `NoNewPrivileges`, etc.
+  `NoNewPrivileges`, etc. Only the unit's `ExecStartPost=+`/`ExecStop=+`/`ExecStopPost=+` steps
+  (`dpigec sysdns on|off`, `dpigec cleanup`) run as full root outside the sandbox: they write/remove one
+  fixed file with fixed content under `/run/systemd/resolved.conf.d`, run `systemctl`/`resolvectl`/`nft`,
+  and take no user input. DoT is paused only after the DNS redirect is seen in the live ruleset and restored
+  before the rules are removed (in service mode the engine leaves rule removal to `ExecStopPost`); if the
+  ruleset is flushed or a rule is deleted by something else while running, the engine is notified by the
+  kernel (`nft monitor`, no polling) and re-applies it within about 100 ms.
 - All privileged operations go through a single helper (`dpigecctl`); the configuration is read from
   STDIN and every field is strictly validated, only validated numbers enter the nftables text. The only
   other argument the helper accepts from the unprivileged side is the interface language code, checked

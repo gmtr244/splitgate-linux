@@ -6,9 +6,17 @@ Wants=network.target
 
 [Service]
 Type=simple
-ExecStart=@PREFIX@/bin/dpigec daemon
+ExecStart=@PREFIX@/bin/dpigec daemon --service
+# systemd-resolved DNS-over-TLS compatibility: queries over DoT (853) bypass the DNS redirect,
+# and fail entirely on networks whose DNS server does not speak DoT. While the service runs,
+# DoT is paused with a /run drop-in; port 53 is redirected to the local proxy, which uses DoH.
+# "+" runs these outside the sandbox (they write /run/systemd/resolved.conf.d and reload resolved).
+# On: only after the nftables rules exist (the helper waits for them).
+ExecStartPost=-+@PREFIX@/bin/dpigec sysdns on
+# Off: before the engine removes the nftables rules, so no plain DNS leaks in between.
+ExecStop=-+@PREFIX@/bin/dpigec sysdns off
 # Even if the service crashes, the nftables redirect must not be left behind (it would cut the internet)
-ExecStopPost=-@PREFIX@/bin/dpigec cleanup
+ExecStopPost=-+@PREFIX@/bin/dpigec cleanup
 Restart=on-failure
 RestartSec=3
 RuntimeDirectory=dpigec

@@ -8,9 +8,11 @@ Açmıyorsa (ve otomatik seçim açıksa) önce bu ağ için kayıtlı yöntem, 
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
+import socket
 import tempfile
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
@@ -31,6 +33,27 @@ FAILED = "failed"
 IDLE = "idle"
 
 ProbeFn = Callable[..., Awaitable[List[Dict[str, Any]]]]
+SysDnsFn = Callable[[List[str]], Awaitable[bool]]
+
+SYSTEM_DNS_TIMEOUT = 8.0
+
+
+async def system_dns_ok(domains: List[str], timeout: float = SYSTEM_DNS_TIMEOUT) -> bool:
+    """Uygulamaların kullandığı sistem çözücüsü (getaddrinfo -> resolved) en az bir adı çözüyor mu?
+
+    Test, motorun kendi DoH'unu değil uygulamaların gerçek yolunu dener: yöntem çalışsa da
+    sistem DNS'i ölü ise (ör. katı DoT + DoT bilmeyen router) hiçbir uygulama bağlanamaz.
+    """
+    loop = asyncio.get_running_loop()
+    for d in domains[:3]:
+        try:
+            infos = await asyncio.wait_for(
+                loop.getaddrinfo(d, 443, family=socket.AF_UNSPEC, type=socket.SOCK_STREAM), timeout)
+        except (OSError, asyncio.TimeoutError, UnicodeError):
+            continue
+        if infos:
+            return True
+    return False
 
 
 def load_networks(path: str = NETWORKS_FILE) -> Dict[str, Dict[str, str]]:
@@ -66,9 +89,10 @@ def save_networks(nets: Dict[str, Dict[str, str]], path: str = NETWORKS_FILE) ->
 
 class Checker:
     def __init__(self, cfg: Dict[str, Any], run_probe: ProbeFn = probe.run_probe,
-                 networks_path: str = NETWORKS_FILE) -> None:
+                 networks_path: str = NETWORKS_FILE, sys_dns: SysDnsFn = system_dns_ok) -> None:
         self.cfg = cfg
         self.run_probe = run_probe
+        self.sys_dns = sys_dns
         self.networks_path = networks_path
         self.networks = load_networks(networks_path)
 
@@ -94,6 +118,20 @@ class Checker:
 
     async def verify(self, net: Optional[NetId], active: str, apply: Callable[[str], None],
                      still: Callable[[], bool] = lambda: True) -> Dict[str, Any]:
+        res = await self._verify_method(net, active, apply, still)
+        # Yöntem siteleri açsa bile uygulamalar sistem DNS'ini kullanır (şeffaf mod): o ölü ise
+        # "çalışıyor" demek yanlış olur. SOCKS modunda adları vekil çözer, bu test gerekmez.
+        if res["check"] in (WORKING, NOT_BLOCKED) and self.cfg.get("mode") == "transparent":
+            # Engelli bir test sitesi + genel adlar: tek bir sitenin NXDOMAIN'i "DNS ölü" sanılmasın.
+            first = list(self.cfg.get("probe_domains") or [])[:1]
+            domains = first + ["example.com", "cloudflare.com"]
+            if not await self.sys_dns(domains):
+                log.warning("system DNS (getaddrinfo) cannot resolve names on %s", net.label if net else "?")
+                res = dict(res, check=FAILED, verdict=probe.SYSTEM_DNS)
+        return res
+
+    async def _verify_method(self, net: Optional[NetId], active: str, apply: Callable[[str], None],
+                             still: Callable[[], bool] = lambda: True) -> Dict[str, Any]:
         """active: şu an kullanılan ön ayar (custom olabilir). apply(preset): yöntemi canlı uygular.
 
         still(): sonuç uygulanmadan/kaydedilmeden hemen önce hâlâ aynı ağda mıyız. Ağ yoklaması birkaç saniyede
