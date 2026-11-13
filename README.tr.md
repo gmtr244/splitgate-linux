@@ -80,7 +80,8 @@ Kaldırma: `./uninstall.sh` (`--purge` ayarları da siler).
    uyarısı görünür.
 8. *Durum* sayfasında canlı indirme/yükleme grafiği de vardır. Arayüzün her yeri animasyonludur; *Hakkında →
    Animasyonları aç* ile kapatabilirsiniz (ya da `DPIGEC_NO_ANIM=1` ile başlatın). Pencere tepside gizliyken
-   animasyonlar durur, işlemciyi kullanmaz.
+   animasyonlar durur, işlemciyi kullanmaz. Pil için gizliyken ya da simge durumundayken pencere yalnızca 10 sn'de
+   bir yenilenir (yalnızca tepsi ipucu; çizim ve `systemctl` çağrısı yok); yeniden açılınca hemen güncellenir.
 
 **Komut satırı:**
 

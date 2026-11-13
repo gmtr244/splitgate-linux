@@ -59,6 +59,37 @@ class GuiSmoke(unittest.TestCase):
         win._timer.stop()
         return gui, win
 
+    def test_hidden_window_does_not_spawn_or_redraw(self):
+        # Pil: tepsiye gizliyken her saniye çizim ve 5 sn'de bir systemctl süreci olmamalı.
+        gui, win = self.make_window()
+        calls = {"enabled": 0, "render": 0}
+        old = gui.unit_enabled, gui.read_status
+        real_render = win.render_status
+        gui.unit_enabled = lambda: calls.__setitem__("enabled", calls["enabled"] + 1) or False
+        gui.read_status = lambda: None
+        win.render_status = lambda st: (calls.__setitem__("render", calls["render"] + 1), real_render(st))
+        try:
+            win.hide()
+            calls.update(enabled=0, render=0)
+            for _ in range(12):
+                win._tick()
+            self.assertEqual(calls, {"enabled": 0, "render": 0})
+            self.assertEqual(win._timer.interval(), gui.TICK_HIDDEN_MS)
+            # bir işlem sürerken (ör. tepsiden Başlat) gizli olsa da hızlı yenilenir
+            win._pending_target, win._pending_since = True, gui.time.monotonic()
+            win._adjust_timer()
+            self.assertEqual(win._timer.interval(), gui.TICK_VISIBLE_MS)
+            win._pending_target = None
+            win.show()  # açılınca anında tam yenileme + otomatik başlatma durumu
+            self.assertGreaterEqual(calls["render"], 1)
+            self.assertGreaterEqual(calls["enabled"], 1)
+            self.assertEqual(win._timer.interval(), gui.TICK_VISIBLE_MS)
+            self.assertIsNone(win._last_bytes)
+        finally:
+            gui.unit_enabled, gui.read_status = old
+            win.render_status = real_render
+            win.close()
+
     def test_window_and_form_roundtrip(self):
         gui, win = self.make_window()
         cfg = win._form_to_config()

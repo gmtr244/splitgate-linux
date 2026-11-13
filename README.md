@@ -79,7 +79,9 @@ Uninstall: `./uninstall.sh` (`--purge` also deletes the settings).
    (collapsed). An *Unsaved changes* note appears next to *Save and apply* (`Ctrl+S`) until you save.
 8. *Status* also shows a live download/upload graph. Everything in the interface is animated; switch it off
    with *About → Enable animations* (or start with `DPIGEC_NO_ANIM=1`). The animations pause while the window
-   is hidden in the tray, so they do not use the CPU.
+   is hidden in the tray, so they do not use the CPU. While hidden or minimized the window also refreshes only
+   every 10 s (tray tooltip only, no redraw, no `systemctl` calls) to save battery; it catches up at once
+   when shown again.
 
 **Command line:**
 

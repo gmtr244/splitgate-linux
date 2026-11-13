@@ -12,7 +12,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal
+from PyQt6.QtCore import QEvent, Qt, QThread, QTimer, pyqtSignal
 from PyQt6.QtGui import QAction, QColor, QFont, QIcon, QKeySequence, QPainter, QPixmap, QShortcut
 from PyQt6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog, QFormLayout, QFrame,
                              QGridLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMenu,
@@ -34,6 +34,10 @@ from .widgets import (ACCENT, AnimButton, BusyBar, CollapsibleSection, Pages, Po
 
 GREEN, GREY, AMBER, RED = "#2ea043", "#6e7681", "#d29922", "#f85149"
 ICON_PATH = Path(__file__).parent / "resources" / "dpigec.svg"
+# Durum yenileme aralığı: pencere görünürken 1 sn; tepsiye gizliyken/simge durumundayken seyrek
+# (pil): yalnızca tepsi ipucu güncellenir, çizim ve systemctl çağrısı yapılmaz.
+TICK_VISIBLE_MS = 1000
+TICK_HIDDEN_MS = 10000
 
 MODE_ITEMS = [("transparent", "System-wide (transparent, recommended)"),
               ("socks", "Local SOCKS5/HTTP proxy (127.0.0.1)")]
@@ -785,6 +789,8 @@ class MainWindow(QMainWindow):
 
     def showEvent(self, event) -> None:  # noqa: N802
         super().showEvent(event)
+        if hasattr(self, "_timer"):
+            self._on_visibility_changed()
         if not self._intro_played:
             self._intro_played = True
             for i, card in enumerate(self.cards.values()):
@@ -950,9 +956,11 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(res.get("msg", "") or _("Ready"), 8000)
             self._update_buttons()
             done(res)
+            self._adjust_timer()
 
         worker.done.connect(finished)
         worker.start()
+        self._adjust_timer()  # tepsiden başlatılsa bile sonuç hızlı yansısın
 
     def _toggle(self) -> None:
         if self._busy:
@@ -1103,11 +1111,35 @@ class MainWindow(QMainWindow):
     def _tick(self) -> None:
         self._tick_count += 1
         self._status = read_status()
+        if not self._shown():
+            # Gizli: tam çizim, hız grafiği, günlük ve systemctl (süreç başlatma) yok.
+            self._render_tray_only(self._status)
+            self._adjust_timer()
+            return
         self.render_status(self._status)
         if self._tick_count % 5 == 1:
             self._sync_autostart()
         if self.tabs.currentIndex() == PAGE_LOG and self._tick_count % 2 == 0:
             self._refresh_log()
+        self._adjust_timer()
+
+    def _on_visibility_changed(self) -> None:
+        if self._shown():
+            # Gizli kalınan süre hız grafiğinde tek bir sahte tepe gibi görünmesin.
+            self._last_bytes = None
+            self._tick_count = 0  # ilk tikte otomatik başlatma durumu da yenilenir
+            self._tick()
+        else:
+            self._adjust_timer()
+
+    def hideEvent(self, event) -> None:  # noqa: N802
+        super().hideEvent(event)
+        self._on_visibility_changed()
+
+    def changeEvent(self, event) -> None:  # noqa: N802
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.WindowStateChange:
+            self._on_visibility_changed()
 
     @staticmethod
     def _set_line(label: QLabel, text: str) -> None:
@@ -1138,12 +1170,47 @@ class MainWindow(QMainWindow):
             f'<span style="color:{Sparkline.COLORS[0]}">●</span> ↓ {fmt_bytes(rate_down)}/s &nbsp; '
             f'<span style="color:{Sparkline.COLORS[1]}">●</span> ↑ {fmt_bytes(rate_up)}/s')
 
-    def render_status(self, st: Optional[Dict[str, Any]]) -> None:
+    def _pending_now(self, st: Optional[Dict[str, Any]]) -> bool:
+        """Başlat/Durdur sonucu henüz durum dosyasına yansımadı mı? (10 sn sonra vazgeçilir)"""
         pending = (self._pending_target is not None
                    and time.monotonic() - self._pending_since < 10
                    and (self._pending_target == (st is None)))
         if self._pending_target is not None and not pending:
             self._pending_target = None
+        return pending
+
+    def _shown(self) -> bool:
+        return self.isVisible() and not self.isMinimized()
+
+    def _adjust_timer(self) -> None:
+        busy = self._busy or bool(self._workers) or self._pending_target is not None
+        want = TICK_VISIBLE_MS if (self._shown() or busy) else TICK_HIDDEN_MS
+        if self._timer.interval() != want:
+            self._timer.setInterval(want)
+
+    def _render_tray_only(self, st: Optional[Dict[str, Any]]) -> None:
+        """Pencere gizliyken: yalnızca tepsi ipucu ve menü metni (ucuz)."""
+        if self.tray is None:
+            return
+        pending = self._pending_now(st)
+        if st:
+            if st.get("state") == "stopping":
+                text = _("Stopping…")
+            else:
+                _c, text = check_style(st.get("check", "idle") if st.get("state") == "running" else "idle")
+            btn = _("Stop")
+        elif pending:
+            text, btn = _("Starting…"), _("Stop")
+        else:
+            text, btn = _("Stopped"), _("Start")
+        tip = f"SplitGate — {text}"
+        if self.tray.toolTip() != tip:
+            self.tray.setToolTip(tip)
+        if self.tray_toggle.text() != btn:
+            self.tray_toggle.setText(btn)
+
+    def render_status(self, st: Optional[Dict[str, Any]]) -> None:
+        pending = self._pending_now(st)
         if st:
             if st.get("state") == "stopping":
                 color, text = AMBER, _("Stopping…")
