@@ -33,12 +33,14 @@ install_deps() {
     apt-get update
     # polkit paket adı Debian sürümüne göre değişir: eski sürümlerde policykit-1,
     # yenilerinde polkitd + pkexec. Hangisi varsa onu kur.
-    if apt-cache show policykit-1 >/dev/null 2>&1; then
-      polkit_pkgs="policykit-1"
+    # "apt-cache show" kurulum adayı olmayan pakette de 0 dönebiliyor (Debian 13);
+    # bu yüzden aday sürüm var mı diye bakılır. LC_ALL=C: çıktı çevrilmesin.
+    if LC_ALL=C apt-cache policy policykit-1 2>/dev/null | grep -E 'Candidate: [0-9]' >/dev/null; then
+      polkit_pkgs=(policykit-1)
     else
-      polkit_pkgs="polkitd pkexec"
+      polkit_pkgs=(polkitd pkexec)
     fi
-    DEBIAN_FRONTEND=noninteractive apt-get install -y python3 nftables $polkit_pkgs python3-pyqt6 make
+    DEBIAN_FRONTEND=noninteractive apt-get install -y python3 nftables "${polkit_pkgs[@]}" python3-pyqt6 make
   elif command -v dnf >/dev/null 2>&1; then
     dnf install -y python3 nftables polkit python3-pyqt6 make
   elif command -v zypper >/dev/null 2>&1; then
